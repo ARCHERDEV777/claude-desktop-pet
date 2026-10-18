@@ -34,7 +34,7 @@
 
 1. Скачайте репозиторий: **Code → Download ZIP**, или так:
    ```
-   git clone https://github.com/<логин>/<репозиторий>.git
+   git clone https://github.com/ARCHERDEV777/claude-desktop-pet.git
    ```
 2. Установите зависимости:
    ```
