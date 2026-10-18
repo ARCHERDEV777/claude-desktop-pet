@@ -45,15 +45,17 @@ import winreg
 from datetime import date, datetime
 from pathlib import Path
 
+import pet_i18n as i18n
 import pet_stats as ps
+from pet_i18n import tr
 
 try:
     from PIL import Image, ImageChops, ImageDraw, ImageFont
 except ImportError:
     import ctypes as _ctypes
     _ctypes.windll.user32.MessageBoxW(
-        None, "Не установлена библиотека Pillow.\n\nВыполните в командной строке:\n    pip install pillow",
-        "Питомец Claude", 0x10)
+        None, tr("Не установлена библиотека Pillow.\n\nВыполните в командной строке:\n    pip install pillow"),
+        tr("Питомец Claude"), 0x10)
     raise SystemExit(1)
 
 # --- Настройки -------------------------------------------------------------
@@ -939,13 +941,13 @@ class StatsWindow:
         self.pet = pet
         s = pet.scale
         self.top = top = tk.Toplevel(pet.root)
-        top.title("Статистика Claude")
+        top.title(tr("Статистика Claude"))
         top.configure(bg=MENU_BG)
         top.attributes("-topmost", True)
         top.geometry(f"{int(780 * s)}x{int(660 * s)}")
         bar = tk.Frame(top, bg=MENU_BG)
         bar.pack(fill="x", padx=int(8 * s), pady=(int(8 * s), 0))
-        tk.Button(bar, text="Обновить", command=self.refresh, bg=MENU_HOVER, fg=MENU_FG,
+        tk.Button(bar, text=tr("Обновить"), command=self.refresh, bg=MENU_HOVER, fg=MENU_FG,
                   activebackground=MENU_SEP, activeforeground=MENU_FG, relief="flat",
                   padx=int(10 * s)).pack(side="left")
         self.text = tk.Text(top, bg="#1e1e1e", fg=MENU_FG, font=TEXT_FONT, relief="flat", wrap="none",
@@ -973,13 +975,13 @@ class RenewalDialog:
         self.pet = pet
         s = pet.scale
         self.top = top = tk.Toplevel(pet.root)
-        top.title("Дата продления подписки")
+        top.title(tr("Дата продления подписки"))
         top.configure(bg=MENU_BG)
         top.attributes("-topmost", True)
         top.resizable(False, False)
         pad = {"padx": int(12 * s), "pady": int(4 * s)}
-        tk.Label(top, text="Дата следующего списания (ДД.ММ.ГГГГ).\n"
-                           "Подписка помесячная — прошедшая дата сама\nпереносится на следующий месяц.",
+        tk.Label(top, text=tr("Дата следующего списания (ДД.ММ.ГГГГ).\n"
+                              "Подписка помесячная — прошедшая дата сама\nпереносится на следующий месяц."),
                  justify="left", bg=MENU_BG, fg=MENU_FG, font=TIP_FONT).pack(anchor="w", **pad)
         self.var = tk.StringVar(value=pet.settings.get("renewal", ""))
         entry = tk.Entry(top, textvariable=self.var, font=TIP_FONT, bg="#1e1e1e", fg=MENU_FG,
@@ -989,7 +991,7 @@ class RenewalDialog:
         self.error.pack(anchor="w", padx=int(12 * s))
         bar = tk.Frame(top, bg=MENU_BG)
         bar.pack(fill="x", padx=int(12 * s), pady=int(10 * s))
-        for text, cmd in (("Сохранить", self.save), ("Очистить", self.clear), ("Отмена", top.destroy)):
+        for text, cmd in ((tr("Сохранить"), self.save), (tr("Очистить"), self.clear), (tr("Отмена"), top.destroy)):
             tk.Button(bar, text=text, command=cmd, bg=MENU_HOVER, fg=MENU_FG, activebackground=MENU_SEP,
                       activeforeground=MENU_FG, relief="flat", padx=int(10 * s)).pack(side="left", padx=(0, int(6 * s)))
         entry.bind("<Return>", lambda e: self.save())
@@ -1005,7 +1007,7 @@ class RenewalDialog:
         try:
             datetime.strptime(value, "%d.%m.%Y")
         except ValueError:
-            self.error.configure(text="Нужен формат ДД.ММ.ГГГГ, например 31.10.2026")
+            self.error.configure(text=tr("Нужен формат ДД.ММ.ГГГГ, например 31.10.2026"))
             return
         self.pet.settings["renewal"] = value
         self.pet.save_settings()
@@ -1344,7 +1346,7 @@ class Pet:
 
     def check_notifications(self, now):
         for name, lim in self.usage["limits"].items():
-            title = "5-часовой лимит" if name == "five_hour" else "Недельный лимит"
+            title = tr("5-часовой лимит") if name == "five_hour" else tr("Недельный лимит")
             reset = lim["resets_at"]
             # Оценённое время сброса может сдвинуться на минуты (журнал дочитывается позже),
             # поэтому в ключ уведомления идёт не оно, а номер интервала длиной в окно.
@@ -1353,7 +1355,7 @@ class Pet:
                 # окно сброшено; сообщаем, только если перед сбросом было тревожно
                 if lim.get("last_pct", 0) >= NOTIFY_THRESHOLDS[0]:
                     reset_id = exact or int(reset // ps.WINDOW_SECONDS[name])
-                    self.notify(f"{name}:{reset_id}:reset", f"🔄 {title} обновился — можно работать в полную силу.")
+                    self.notify(f"{name}:{reset_id}:reset", tr("🔄 {title} обновился — можно работать в полную силу.", title=title))
                 continue
             crossed = [t for t in NOTIFY_THRESHOLDS if lim["pct"] >= t]
             if crossed:
@@ -1362,36 +1364,37 @@ class Pet:
                 win_id = exact or int(lim["updated"] // ps.WINDOW_SECONDS[name])
                 for t in crossed[:-1]:  # младшие пороги помечаем, чтобы не всплывали позже
                     self.settings.setdefault("notified", []).append(f"{name}:{win_id}:{t}")
-                tail = (f"\nСброс {ps.fmt_reset(reset, now)} (через {ps.fmt_left(reset - now)})."
+                tail = (tr("\nСброс {at} (через {left}).", at=ps.fmt_reset(reset, now), left=ps.fmt_left(reset - now))
                         if reset else "")
                 self.notify(f"{name}:{win_id}:{crossed[-1]}", f"⚠ {title}: {lim['pct']:.0f} %.{tail}")
         if self.was_blocked and not self.block:
-            self.notify(f"unblock:{int(now // 60)}", "✅ Лимит снова доступен.")
+            self.notify(f"unblock:{int(now // 60)}", tr("✅ Лимит снова доступен."))
         elif self.block and not self.was_blocked:
             reset = self.block[1]
-            self.notify(f"block:{int(reset)}", f"⛔ Лимит исчерпан.\nСброс {ps.fmt_reset(reset, now)} "
-                                               f"(через {ps.fmt_left(reset - now)}).")
+            self.notify(f"block:{int(reset)}", tr("⛔ Лимит исчерпан.\nСброс {at} (через {left}).",
+                                                  at=ps.fmt_reset(reset, now), left=ps.fmt_left(reset - now)))
         # Контекст: процент есть только у терминального Claude Code (status line),
         # для остальных сессий — порог в токенах по журналу. Ключ общий: одно уведомление на сессию.
         for sid, s in self.journal.recent_sessions(now - SESSION_FRESH):
             if s["context"] >= CONTEXT_WARN_TOKENS:
                 self.notify(f"ctx:{sid}",
-                            f"🧠 Контекст сессии ({self.journal.project_of(s['cwd'])}): "
-                            f"{ps.fmt_tokens(s['context'])} токенов.\n"
-                            "Пора сделать /compact или начать новую сессию.")
+                            tr("🧠 Контекст сессии ({project}): {tokens} токенов.\n"
+                               "Пора сделать /compact или начать новую сессию.",
+                               project=self.journal.project_of(s['cwd']), tokens=ps.fmt_tokens(s['context'])))
         for rec in self.usage["sessions"]:
             ctx = rec.get("context_pct")
             if ctx is not None and float(ctx) >= CONTEXT_WARN and now - float(rec["updated"]) < SESSION_FRESH:
                 project = self.journal.project_of(rec.get("cwd"))
                 self.notify(f"ctx:{rec['session_id']}",
-                            f"🧠 Контекст сессии ({project}) заполнен на {float(ctx):.0f} %.\n"
-                            "Пора сделать /compact или начать новую сессию.")
+                            tr("🧠 Контекст сессии ({project}) заполнен на {pct:.0f} %.\n"
+                               "Пора сделать /compact или начать новую сессию.", project=project, pct=float(ctx)))
         renewal = ps.next_renewal(self.settings.get("renewal"))
         if renewal:
             left = (renewal - date.today()).days
             if left <= RENEWAL_WARN_DAYS:
-                when = "сегодня" if left == 0 else f"через {left} дн."
-                self.notify(f"renew:{renewal}:{date.today()}", f"💳 Подписка продлевается {when} ({renewal:%d.%m}).")
+                when = tr("сегодня") if left == 0 else tr("через {n} дн.", n=left)
+                self.notify(f"renew:{renewal}:{date.today()}",
+                            tr("💳 Подписка продлевается {when} ({date:%d.%m}).", when=when, date=renewal))
 
     def session_info(self, sid, s):
         """
@@ -1413,7 +1416,7 @@ class Pet:
     @staticmethod
     def session_line(info, now):
         """«контекст 393 тыс ток. (39 %) · opus-5-5 · 2 мин назад · $3.20» — что известно."""
-        ctx = f"контекст {ps.fmt_tokens(info['context'])} ток."
+        ctx = tr("контекст {tokens} ток.", tokens=ps.fmt_tokens(info['context']))
         if info.get("context_pct") is not None:
             ctx += f" ({float(info['context_pct']):.0f} %)"
         parts = [ctx]
@@ -1434,64 +1437,69 @@ class Pet:
         lines = []
         mark = (lambda icon: icon + " ") if icons else (lambda icon: "")
         if not self.settings.get("limits", True):
-            return [mark("📊") + "Лимиты: показ выключен в настройках"]
+            return [mark("📊") + tr("Лимиты: показ выключен в настройках")]
         if foreign_statusline() and not self.usage["limits"]:
-            return [mark("📊") + "Лимиты: недоступны — в Claude Code стоит другой status line"]
+            return [mark("📊") + tr("Лимиты: недоступны — в Claude Code стоит другой status line")]
         for name, title in ps.WINDOWS.items():
             lim = self.usage["limits"].get(name)
             if not lim:
                 continue
+            title = tr(title)
             if lim["stale"]:
-                lines.append(mark("🔄") + f"{title}: сброшен, новые данные — после ответа Claude Code")
+                lines.append(mark("🔄") + tr("{title}: сброшен, новые данные — после ответа Claude Code", title=title))
             else:
                 reset = lim["resets_at"]
                 approx = "~" if lim.get("estimated") else ""  # оценка по замерам приложения
-                tail = (f" · сброс через {approx}{ps.fmt_left(reset - now)} ({ps.fmt_reset(reset, now)})"
-                        if reset else "")
+                tail = (tr(" · сброс через {approx}{left} ({at})", approx=approx,
+                           left=ps.fmt_left(reset - now), at=ps.fmt_reset(reset, now)) if reset else "")
                 lines.append(mark(LIMIT_ICONS[name]) + f"{title}: {lim['pct']:.0f} %{tail}")
         if not lines:
-            lines.append(mark("📊") + "Лимиты: данных пока нет — придут с ответом Claude Code")
+            lines.append(mark("📊") + tr("Лимиты: данных пока нет — придут с ответом Claude Code"))
         elif with_source:
             fresh = max(self.usage["limits"].values(), key=lambda lim: lim["updated"])
-            lines.append(f"   данные на {datetime.fromtimestamp(fresh['updated']):%d.%m %H:%M} "
-                         f"({fresh.get('source', 'status line')})")
+            lines.append(tr("   данные на {at:%d.%m %H:%M} ({source})", at=datetime.fromtimestamp(fresh['updated']),
+                            source=tr(fresh.get('source', 'status line'))))
         return lines
 
     def tip_text(self):
         now = time.time()
         # Claude выключен — статистика не нужна, только приглашение открыть его кликом
         if not self.app_running and not self.busy:
-            return "💤 Claude выключен — нажми, и я его открою"
+            return tr("💤 Claude выключен — нажми, и я его открою")
         lines = []
         if not self.running and not self.busy:
-            lines.append(f"💤 Claude отдыхает — нет активности {ps.fmt_left(self.idle_for)}")
+            lines.append(tr("💤 Claude отдыхает — нет активности {left}", left=ps.fmt_left(self.idle_for)))
         elif self.busy:
             code, chat = self.thinking_who
-            who = "Claude Code и чат" if code and chat else ("Claude Code" if code else "чат")
-            lines.append(f"💭 Думает: {who}…")
+            who = tr("Claude Code и чат") if code and chat else ("Claude Code" if code else tr("чат"))
+            lines.append(tr("💭 Думает: {who}…", who=who))
         if self.block:
             reset = self.block[1]
-            lines.append(f"⛔ Лимит исчерпан · сброс {ps.fmt_reset(reset, now)} (через {ps.fmt_left(reset - now)})")
+            lines.append(tr("⛔ Лимит исчерпан · сброс {at} (через {left})", at=ps.fmt_reset(reset, now),
+                            left=ps.fmt_left(reset - now)))
         lines += self.limit_lines(now, icons=True)
         info = self.current_session(now)
         if info:
             # первая строка — папка и название сессии в приложении, вторая — расход
             name = self.journal.project_of(info['cwd'])
             title = ps.session_title(info["session_id"])
-            lines.append(f"📁 Сессия: {name} · {title}" if title else f"📁 Сессия: {name}")
+            lines.append(tr("📁 Сессия: {name} · {title}", name=name, title=title) if title
+                         else tr("📁 Сессия: {name}", name=name))
             lines.append("🧠 " + self.session_line(info, now))
         t5 = self.journal.totals(now - ps.WINDOW_SECONDS["five_hour"])
         today = self.journal.totals(datetime.combine(date.today(), datetime.min.time()).timestamp())
-        lines.append(f"🕔 За 5 ч: {t5['messages']} отв. · выход {ps.fmt_tokens(t5['output'])} ток.")
-        lines.append(f"📈 Сегодня: {today['messages']} отв. · выход {ps.fmt_tokens(today['output'])} ток.")
+        lines.append(tr("🕔 За 5 ч: {n} отв. · выход {tokens} ток.", n=t5['messages'],
+                        tokens=ps.fmt_tokens(t5['output'])))
+        lines.append(tr("📈 Сегодня: {n} отв. · выход {tokens} ток.", n=today['messages'],
+                        tokens=ps.fmt_tokens(today['output'])))
         renewal = ps.next_renewal(self.settings.get("renewal"))
         if renewal:
             left = (renewal - date.today()).days
             if left > 0:
-                lines.append(f"💳 Подписка активна {left} {ps.plural(left, 'день', 'дня', 'дней')}. "
-                             f"Истекает {renewal:%d.%m.%Y}")
+                lines.append(tr("💳 Подписка активна {n} {days}. Истекает {date:%d.%m.%Y}", n=left,
+                                days=i18n.plural(left, "день", "дня", "дней"), date=renewal))
             else:
-                lines.append(f"💳 Подписка истекает сегодня ({renewal:%d.%m.%Y})")
+                lines.append(tr("💳 Подписка истекает сегодня ({date:%d.%m.%Y})", date=renewal))
         return "\n".join(lines)
 
     def update_tip(self, now, hover):
@@ -1509,24 +1517,25 @@ class Pet:
     def stats_report(self):
         """Текст окна «Статистика»."""
         now = time.time()
-        out = [f"Статистика Claude на {datetime.now():%d.%m.%Y %H:%M}", ""]
-        out.append("ЛИМИТЫ ПОДПИСКИ (status line Claude Code и замеры приложения)")
+        out = [tr("Статистика Claude на {now:%d.%m.%Y %H:%M}", now=datetime.now()), ""]
+        out.append(tr("ЛИМИТЫ ПОДПИСКИ (status line Claude Code и замеры приложения)"))
         if self.block:
-            out.append(f"  ⛔ Лимит исчерпан, сброс {ps.fmt_reset(self.block[1], now)}")
+            out.append(tr("  ⛔ Лимит исчерпан, сброс {at}", at=ps.fmt_reset(self.block[1], now)))
         out += ["  " + s.strip() for s in self.limit_lines(now, with_source=True)]
         renewal = ps.next_renewal(self.settings.get("renewal"))
-        out.append(f"  Продление подписки: {renewal:%d.%m.%Y} (через {(renewal - date.today()).days} дн.)"
-                   if renewal else "  Продление подписки: дата не задана (меню → Настройки)")
+        out.append(tr("  Продление подписки: {date:%d.%m.%Y} (через {n} дн.)", date=renewal,
+                      n=(renewal - date.today()).days)
+                   if renewal else tr("  Продление подписки: дата не задана (меню → Настройки)"))
         q = self.journal.quota
         if q:
-            out.append(f"  Последний упор в лимит: {datetime.fromtimestamp(q[0]):%d.%m %H:%M} "
-                       f"({q[1].get('rateLimitType', '?')})")
+            out.append(tr("  Последний упор в лимит: {at:%d.%m %H:%M} ({kind})", at=datetime.fromtimestamp(q[0]),
+                          kind=q[1].get('rateLimitType', '?')))
         out.append("")
 
-        out.append(f"СЕССИИ (последние {SESSIONS_DAYS} дн., контекст на последнем ответе)")
+        out.append(tr("СЕССИИ (последние {days} дн., контекст на последнем ответе)", days=SESSIONS_DAYS))
         sessions = self.journal.recent_sessions(now - SESSIONS_DAYS * 86400)
         if not sessions:
-            out.append("  ответов за это время нет")
+            out.append(tr("  ответов за это время нет"))
         for sid, s in sessions[:SESSIONS_SHOW]:
             info = self.session_info(sid, s)
             out.append(f"  {datetime.fromtimestamp(info['ts']):%d.%m %H:%M}  "
@@ -1534,30 +1543,32 @@ class Pet:
         out.append("")
 
         t5 = self.journal.totals(now - ps.WINDOW_SECONDS["five_hour"])
-        out.append("ПОСЛЕДНИЕ 5 ЧАСОВ (журналы Claude Code)")
-        out.append(f"  ответов {t5['messages']} · вход {ps.fmt_tokens(t5['input'])} · выход "
-                   f"{ps.fmt_tokens(t5['output'])} · кэш: запись {ps.fmt_tokens(t5['cache_write'])}, "
-                   f"чтение {ps.fmt_tokens(t5['cache_read'])}")
+        out.append(tr("ПОСЛЕДНИЕ 5 ЧАСОВ (журналы Claude Code)"))
+        out.append(tr("  ответов {n} · вход {inp} · выход {out} · кэш: запись {cw}, чтение {cr}",
+                      n=t5['messages'], inp=ps.fmt_tokens(t5['input']), out=ps.fmt_tokens(t5['output']),
+                      cw=ps.fmt_tokens(t5['cache_write']), cr=ps.fmt_tokens(t5['cache_read'])))
         out.append("")
 
-        head = f"  {'':<12}{'Ответов':>8}{'Вход':>11}{'Выход':>11}{'Кэш запись':>12}{'Кэш чтение':>12}"
-        out.append(f"ПО ДНЯМ (последние {STATS_DAYS} дн.)")
+        head = (f"  {'':<12}{tr('Ответов'):>8}{tr('Вход'):>11}{tr('Выход'):>11}"
+                f"{tr('Кэш запись'):>12}{tr('Кэш чтение'):>12}")
+        out.append(tr("ПО ДНЯМ (последние {days} дн.)", days=STATS_DAYS))
         out.append(head)
         for d, a in self.journal.by_day(STATS_DAYS):
-            out.append(f"  {d:%d.%m} {ps.WEEKDAYS[d.weekday()]:<6}{a[0]:>8}{ps.fmt_tokens(a[1]):>11}"
+            out.append(f"  {d:%d.%m} {ps.weekday_name(d.weekday()):<6}{a[0]:>8}{ps.fmt_tokens(a[1]):>11}"
                        f"{ps.fmt_tokens(a[2]):>11}{ps.fmt_tokens(a[3]):>12}{ps.fmt_tokens(a[4]):>12}")
         out.append("")
 
-        out.append(f"ПО ПРОЕКТАМ (последние {STATS_DAYS} дн.)")
+        out.append(tr("ПО ПРОЕКТАМ (последние {days} дн.)", days=STATS_DAYS))
         out.append(head)
         projects = self.journal.by_project(now - STATS_DAYS * 86400)
         total_out = sum(a[2] for a in projects.values()) or 1
         for name, a in sorted(projects.items(), key=lambda kv: -kv[1][2]):
             out.append(f"  {name[:11]:<12}{a[0]:>8}{ps.fmt_tokens(a[1]):>11}{ps.fmt_tokens(a[2]):>11}"
-                       f"{ps.fmt_tokens(a[3]):>12}{ps.fmt_tokens(a[4]):>12}   {a[2] / total_out * 100:.0f} % выхода")
+                       f"{ps.fmt_tokens(a[3]):>12}{ps.fmt_tokens(a[4]):>12}"
+                       + tr("   {pct:.0f} % выхода", pct=a[2] / total_out * 100))
         out.append("")
-        out.append("Обычный чат приложения в журналах не виден, но лимит у него общий —")
-        out.append("проценты 5 ч / недели учитывают и его.")
+        out.append(tr("Обычный чат приложения в журналах не виден, но лимит у него общий —"))
+        out.append(tr("проценты 5 ч / недели учитывают и его."))
         return "\n".join(out)
 
     def open_stats(self):
@@ -1606,7 +1617,7 @@ class Pet:
         if hwnd is None:
             command = claude_launch_command()
             if command is None:
-                user32.MessageBoxW(None, "Не удалось найти установленное приложение Claude.", "Питомец Claude", 0x30)
+                user32.MessageBoxW(None, tr("Не удалось найти установленное приложение Claude."), tr("Питомец Claude"), 0x30)
                 return
             try:
                 subprocess.Popen(command)
@@ -1623,7 +1634,7 @@ class Pet:
         try:
             os.startfile(url)
         except OSError:
-            user32.MessageBoxW(None, f"Не удалось открыть {what}.", "Питомец Claude", 0x30)
+            user32.MessageBoxW(None, tr("Не удалось открыть {what}.", what=tr(what)), tr("Питомец Claude"), 0x30)
 
     # меню
     def menu_items(self):
@@ -1631,17 +1642,18 @@ class Pet:
         # а когда запущено — наоборот. Папки открываются и без Claude.
         running = claude_running(app_only=True)
         return [
-            {"label": "Запустить Claude", "command": self.toggle_claude, "disabled": running},
-            {"label": "Открыть Claude", "submenu": self.chat_items, "disabled": not running},
-            {"label": "Открыть Code", "submenu": self.code_items, "disabled": not running},
-            {"label": "Открыть папку", "submenu": self.folder_items},
+            {"label": tr("Запустить Claude"), "command": self.toggle_claude, "disabled": running},
+            {"label": tr("Открыть Claude"), "submenu": self.chat_items, "disabled": not running},
+            {"label": tr("Открыть Code"), "submenu": self.code_items, "disabled": not running},
+            {"label": tr("Открыть папку"), "submenu": self.folder_items},
             None,
-            {"label": "Статистика", "command": self.open_stats},
+            {"label": tr("Статистика"), "command": self.open_stats},
             None,
-            {"label": "Размер", "submenu": self.size_items},
-            {"label": "Настройки", "submenu": self.settings_items},
+            {"label": tr("Размер"), "submenu": self.size_items},
+            {"label": tr("Настройки"), "submenu": self.settings_items},
+            {"label": tr("Язык"), "submenu": self.lang_items},
             None,
-            {"label": "Закрыть питомца", "command": self.root.destroy},
+            {"label": tr("Закрыть питомца"), "command": self.root.destroy},
         ]
 
     def link_item(self, label, url, what):
@@ -1650,24 +1662,24 @@ class Pet:
 
     def chat_items(self):
         return [
-            self.link_item("Новый чат", NEW_CHAT_URL, "новый чат Claude"),
-            self.link_item("Недавние чаты", RECENT_CHATS_URL, "недавние чаты"),
-            self.link_item("Проекты", PROJECTS_URL, "проекты"),
-            self.link_item("Задачи", TASKS_URL, "задачи"),
+            self.link_item(tr("Новый чат"), NEW_CHAT_URL, "новый чат Claude"),
+            self.link_item(tr("Недавние чаты"), RECENT_CHATS_URL, "недавние чаты"),
+            self.link_item(tr("Проекты"), PROJECTS_URL, "проекты"),
+            self.link_item(tr("Задачи"), TASKS_URL, "задачи"),
             None,
-            self.link_item("Коннекторы", DIRECTORY_URL, "каталог коннекторов"),
-            self.link_item("Плагины и навыки", CUSTOMIZE_URL, "плагины и навыки"),
-            self.link_item("Настройки", SETTINGS_URL, "настройки Claude"),
+            self.link_item(tr("Коннекторы"), DIRECTORY_URL, "каталог коннекторов"),
+            self.link_item(tr("Плагины и навыки"), CUSTOMIZE_URL, "плагины и навыки"),
+            self.link_item(tr("Настройки"), SETTINGS_URL, "настройки Claude"),
         ]
 
     def code_items(self):
         return [
-            self.link_item("Новый чат Code", NEW_CODE_SESSION_URL, "новую сессию Claude Code"),
-            self.link_item("Последний чат Code", LAST_CODE_SESSION_URL, "последнюю сессию Claude Code"),
-            {"label": "Сессии", "submenu": self.session_items},
+            self.link_item(tr("Новый чат Code"), NEW_CODE_SESSION_URL, "новую сессию Claude Code"),
+            self.link_item(tr("Последний чат Code"), LAST_CODE_SESSION_URL, "последнюю сессию Claude Code"),
+            {"label": tr("Сессии"), "submenu": self.session_items},
             None,
-            self.link_item("Ждут ответа", NEEDS_INPUT_URL, "сессии, ждущие ответа"),
-            self.link_item("Поиск сессий", CODE_SEARCH_URL, "поиск сессий Claude Code"),
+            self.link_item(tr("Ждут ответа"), NEEDS_INPUT_URL, "сессии, ждущие ответа"),
+            self.link_item(tr("Поиск сессий"), CODE_SEARCH_URL, "поиск сессий Claude Code"),
         ]
 
     def session_items(self):
@@ -1675,7 +1687,7 @@ class Pet:
         today = datetime.combine(date.today(), datetime.min.time()).timestamp()
         sessions = [s for s in ps.app_sessions(None) if s["ts"] >= today][:SESSIONS_MENU_MAX]
         if not sessions:
-            return [{"label": "Сегодня сессий нет", "disabled": True}]
+            return [{"label": tr("Сегодня сессий нет"), "disabled": True}]
         items = []
         for s in sessions:
             label = s["title"] or Path(s["cwd"]).name or s["id"]
@@ -1686,24 +1698,39 @@ class Pet:
 
     def size_items(self):
         current = self.settings.get("size", SIZES["Средний"])
-        return [{"label": name, "checked": value == current, "command": lambda v=value: self.on_size(v)}
+        return [{"label": tr(name), "checked": value == current, "command": lambda v=value: self.on_size(v)}
                 for name, value in SIZES.items()]
+
+    def lang_items(self):
+        """Языки — каждый своим названием, чтобы найти свой, даже не зная текущего."""
+        current = i18n.LANG
+        return [{"label": title, "checked": code == current, "command": lambda c=code: self.set_lang(c)}
+                for code, title in i18n.LANGS.items()]
+
+    def set_lang(self, code):
+        """Сменить язык: меню и подсказка строятся заново при каждом показе, окно статистики — обновляем."""
+        i18n.set_lang(code)
+        self.settings["lang"] = i18n.LANG
+        self.save_settings()
+        if self.stats_window and self.stats_window.top.winfo_exists():
+            self.stats_window.close()
+            self.open_stats()
 
     def settings_items(self):
         return [
-            {"label": "Сворачиваться в покое", "checked": self.settings.get("collapse", True),
+            {"label": tr("Сворачиваться в покое"), "checked": self.settings.get("collapse", True),
              "command": self.toggle_collapse},
-            {"label": "Следить за чатом Claude", "checked": self.settings.get("chat_watch", True),
+            {"label": tr("Следить за чатом Claude"), "checked": self.settings.get("chat_watch", True),
              "command": self.toggle_chat_watch},
-            {"label": "Следить за Claude Code", "checked": self.settings.get("thinking", True),
+            {"label": tr("Следить за Claude Code"), "checked": self.settings.get("thinking", True),
              "command": self.toggle_thinking},
-            {"label": "Показывать лимиты подписки", "checked": self.settings.get("limits", True),
+            {"label": tr("Показывать лимиты подписки"), "checked": self.settings.get("limits", True),
              "command": self.toggle_limits},
-            {"label": "Уведомления", "checked": self.settings.get("notify", True),
+            {"label": tr("Уведомления"), "checked": self.settings.get("notify", True),
              "command": self.toggle_notify},
-            {"label": "Дата продления подписки…", "command": lambda: RenewalDialog(self)},
+            {"label": tr("Дата продления подписки…"), "command": lambda: RenewalDialog(self)},
             None,
-            {"label": "Запускать вместе с Windows", "checked": autostart_enabled(),
+            {"label": tr("Запускать вместе с Windows"), "checked": autostart_enabled(),
              "command": lambda: set_autostart(not autostart_enabled())},
         ]
 
@@ -1715,7 +1742,7 @@ class Pet:
         """
         folders = ps.project_folders(PROJECTS_ROOT, dict(self.journal.cwds))
         if not folders:
-            return [{"label": "Папок проектов пока нет", "disabled": True}]
+            return [{"label": tr("Папок проектов пока нет"), "disabled": True}]
         names = [p.name.lower() for p, _ in folders]
         parents = [ps._norm(p.parent) for p, _ in folders]
         root = max(set(parents), key=parents.count)   # где лежит большинство проектов

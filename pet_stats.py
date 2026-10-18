@@ -24,6 +24,8 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from pet_i18n import tr
+
 USAGE_DIR = Path.home() / ".claude-desktop-pet" / "usage"
 # Каталог Claude Code: по умолчанию ~/.claude, но его можно перенести переменной
 # окружения CLAUDE_CONFIG_DIR — тогда там же лежат settings.json, журналы и .claude.json.
@@ -68,11 +70,11 @@ def fmt_tokens(n):
     """1234 → «1.2 тыс», 2_500_000 → «2.5 млн»."""
     n = float(n or 0)
     if n >= 1e9:
-        return f"{n / 1e9:.1f} млрд"
+        return tr("{n:.1f} млрд", n=n / 1e9)
     if n >= 1e6:
-        return f"{n / 1e6:.1f} млн"
+        return tr("{n:.1f} млн", n=n / 1e6)
     if n >= 1e3:
-        return f"{n / 1e3:.1f} тыс"
+        return tr("{n:.1f} тыс", n=n / 1e3)
     return f"{n:.0f}"
 
 
@@ -83,41 +85,36 @@ def fmt_left(seconds):
     h, rem = divmod(rem, 3600)
     m = rem // 60
     if d:
-        return f"{d} дн {h} ч"
+        return tr("{d} дн {h} ч", d=d, h=h)
     if h:
-        return f"{h} ч {m:02d} мин"
-    return f"{m} мин"
-
-
-def plural(n, one, few, many):
-    """Слово в нужной форме для числа n: plural(10, "день", "дня", "дней") → «дней»."""
-    n = abs(int(n))
-    if n % 10 == 1 and n % 100 != 11:
-        return one
-    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
-        return few
-    return many
+        return tr("{h} ч {m:02d} мин", h=h, m=m)
+    return tr("{m} мин", m=m)
 
 
 def fmt_countdown(seconds):
     """Короткий таймер для мордочки питомца: «2:05» (ч:мин) или «45м»."""
     s = max(0, int(seconds))
     h, m = s // 3600, (s % 3600) // 60
-    return f"{h}:{m:02d}" if h else f"{max(m, 1)}м"
+    return f"{h}:{m:02d}" if h else tr("{m}м", m=max(m, 1))
 
 
 WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+
+
+def weekday_name(i):
+    """Короткое название дня недели (0 — понедельник) на текущем языке."""
+    return tr(WEEKDAYS[i])
 
 
 def fmt_since(ts, now=None):
     """Давность в пределах суток: «только что», «12 мин назад», «3 ч назад»; дальше — дата."""
     s = (now or time.time()) - ts
     if s < 60:
-        return "только что"
+        return tr("только что")
     if s < 3600:
-        return f"{int(s // 60)} мин назад"
+        return tr("{n} мин назад", n=int(s // 60))
     if s < 86400:
-        return f"{int(s // 3600)} ч назад"
+        return tr("{n} ч назад", n=int(s // 3600))
     return fmt_ago(ts, now)
 
 
@@ -131,11 +128,11 @@ def fmt_ago(ts, now=None):
     now = now or time.time()
     days = (datetime.fromtimestamp(now).date() - datetime.fromtimestamp(ts).date()).days
     if days <= 0:
-        return "сегодня"
+        return tr("сегодня")
     if days == 1:
-        return "вчера"
+        return tr("вчера")
     if days < 7:
-        return f"{days} дн. назад"
+        return tr("{n} дн. назад", n=days)
     return f"{datetime.fromtimestamp(ts):%d.%m.%Y}"
 
 
@@ -146,8 +143,8 @@ def fmt_reset(ts, now=None):
     if dt.date() == today:
         return f"{dt:%H:%M}"
     if dt.date() == today + timedelta(days=1):
-        return f"завтра {dt:%H:%M}"
-    return f"{WEEKDAYS[dt.weekday()]} {dt:%d.%m %H:%M}"
+        return tr("завтра {at:%H:%M}", at=dt)
+    return f"{weekday_name(dt.weekday())} {dt:%d.%m %H:%M}"
 
 
 # --- Status line ---------------------------------------------------------------
@@ -475,7 +472,7 @@ class JournalStats:
             return "—"
         key = _norm(cwd)
         if "scratch-workspaces" in key:
-            return "прочее"
+            return tr("прочее")
         best = cwd
         for known in list(self.cwds):
             k = _norm(known)

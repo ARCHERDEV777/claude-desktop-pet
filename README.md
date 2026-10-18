@@ -1,81 +1,87 @@
-# Питомец Claude
+# Claude Desktop Pet
 
-Маленький питомец на рабочем столе Windows для приложения Claude и Claude Code. Это круглая мордочка поверх всех окон: она показывает, что Claude думает над ответом, сколько израсходовано лимита подписки и запущен ли Claude вообще.
+**English** | [Русский](README.ru.md)
 
-![Состояния питомца](pet.png)
+A small desktop pet for Windows that keeps you company while you work with the Claude app and Claude Code. It is a round little face that floats above all windows. It shows when Claude is thinking, how much of your subscription limit you have used, and whether Claude is running at all.
 
-## Что умеет
+![Pet states](pet.png)
 
-- **Клик** разворачивает Claude. Если Claude уже активен, сворачивает его, а если не запущен — запускает.
-- **Перетаскивание** левой кнопкой мыши перемещает питомца по экрану.
-- **Покой.** Если мышь далеко, питомец сворачивается в полупрозрачный шарик, а при наведении снова разворачивается. Глаза следят за курсором и иногда моргают.
-- **Claude думает.** Пока Claude Code работает над ответом, по ореолу бежит светящаяся дуга по часовой стрелке. В обычном чате дуга бежит против часовой.
-- **Цвет ореола** показывает расход лимита подписки: зелёный — меньше 50 %, жёлтый — до 80 %, красный — 80 % и больше.
-- **Лимит исчерпан.** Питомец грустит, а на мордочке идёт таймер до сброса.
-- **Сон.** Если Claude не запущен или не активен 3 минуты, питомец засыпает.
-- **Подсказка при наведении:** лимиты за 5 часов и за неделю, заполнение контекста, токены, дата продления подписки.
-- **Уведомления-пузыри:** при 80 % и 95 % лимита, при сбросе лимита, при заполненном контексте и перед продлением подписки.
-- **Меню по правой кнопке:**
-  - быстрые ссылки в Claude: новый чат, недавние чаты, проекты, задачи, коннекторы, настройки;
-  - Claude Code: новая сессия, последняя сессия, сессии, ждущие ответа, поиск;
-  - папки проектов;
-  - статистика;
-  - размер питомца;
-  - автозапуск вместе с Windows.
+*The labels in the picture are in Russian. Each one shows a pet state: idle, following the cursor, thinking, limit colors, limit reached, sleeping.*
 
-## Требования
+## Features
 
-- Windows 10 или 11.
-- Приложение Claude для Windows и/или Claude Code.
-- Python 3 с python.org. Галочку *tcl/tk and IDLE* при установке не снимайте. Python из Microsoft Store не подойдёт: он подменяет папку `%APPDATA%` для запускаемых программ.
-- Библиотека Pillow.
+- **Click** to bring Claude to the front. If Claude is already active, the click minimizes it; if Claude is not running, it starts it.
+- **Drag** with the left mouse button to move the pet around the screen.
+- **Idle.** When the mouse is far away, the pet shrinks into a semi-transparent ball and expands again on hover. Its eyes follow the cursor, and it blinks now and then.
+- **Claude is thinking.** While Claude Code works on a reply, a glowing arc runs clockwise around the halo. For the regular chat, the arc runs counterclockwise.
+- **Halo color** shows subscription limit usage: green below 50 %, yellow up to 80 %, red at 80 % and above.
+- **Limit reached.** The pet looks sad and shows a countdown to the reset on its face.
+- **Sleep.** If Claude is not running or has been inactive for 3 minutes, the pet falls asleep.
+- **Hover tooltip:** 5-hour and weekly limits, context usage, tokens, subscription renewal date.
+- **Notification bubbles:** at 80 % and 95 % of the limit, when the limit resets, when the context is full, and before the subscription renews.
+- **Right-click menu:**
+  - quick links into Claude: new chat, recent chats, projects, tasks, connectors, settings;
+  - Claude Code: new session, last session, sessions waiting for input, search;
+  - project folders;
+  - statistics;
+  - pet size;
+  - start with Windows.
 
-## Установка
+The pet's interface (menu, tooltips, notifications) is in Russian.
 
-1. Скачайте репозиторий: **Code → Download ZIP**, или так:
+## Requirements
+
+- Windows 10 or 11.
+- The Claude app for Windows and/or Claude Code.
+- Python 3 from python.org. Keep the *tcl/tk and IDLE* option checked during installation. Python from the Microsoft Store will not work: it redirects the `%APPDATA%` folder for the programs it starts.
+- The Pillow library.
+
+## Installation
+
+1. Download the repository: **Code → Download ZIP**, or:
    ```
    git clone https://github.com/ARCHERDEV777/claude-desktop-pet.git
    ```
-2. Установите зависимости:
+2. Install the dependencies:
    ```
    pip install -r requirements.txt
    ```
-3. Запустите **`Запустить питомца.vbs`** двойным щелчком. Скрипт сам найдёт установленный Python и запустит питомца без окна консоли.
+3. Double-click **`Start Pet.vbs`**. The script finds your Python installation and starts the pet without a console window.
 
-Чтобы питомец стартовал вместе с Windows, включите в его меню пункт **«Запускать вместе с Windows»**.
+To start the pet with Windows, turn on **«Запускать вместе с Windows»** ("Start with Windows") in its menu.
 
-## Как это работает
+## How it works
 
-| Файл | Назначение |
+| File | Purpose |
 |---|---|
-| `claude_pet.pyw` | Сам питомец: окно, анимация, меню, уведомления. |
-| `pet_stats.py` | Сбор статистики: лимиты, токены по журналам Claude Code, папки проектов. |
-| `pet_hook.py` | Хук Claude Code. Отмечает, что Claude думает над ответом. |
-| `pet_statusline.py` | Status line Claude Code. Сохраняет проценты лимитов и контекста, а заодно выводит их строкой внизу окна Claude Code. |
-| `chat_watch.ps1` | Следит за обычным чатом: видна ли в окне Claude кнопка «Остановить ответ». |
-| `Запустить питомца.vbs` | Запуск без консоли с автопоиском Python. |
+| `claude_pet.pyw` | The pet itself: window, animation, menu, notifications. |
+| `pet_stats.py` | Collects statistics: limits, tokens from Claude Code logs, project folders. |
+| `pet_hook.py` | Claude Code hook. Marks when Claude is thinking about a reply. |
+| `pet_statusline.py` | Claude Code status line. Saves limit and context percentages and also prints them at the bottom of the Claude Code window. |
+| `chat_watch.ps1` | Watches the regular chat: checks whether the Stop response button is visible in the Claude window. |
+| `Start Pet.vbs` | Starts the pet without a console and finds Python automatically. |
 
-При запуске питомец сам добавляет свои хуки и status line в `~/.claude/settings.json`. Чужие настройки он не трогает: если у вас уже есть своя status line, он её не заменяет. Если вы перенесли папку питомца, пути в настройках обновятся при следующем запуске. Хуки отключаются пунктами меню «Следить за Claude Code» и «Показывать лимиты подписки».
+On startup, the pet adds its hooks and status line to `~/.claude/settings.json`. It leaves other settings alone: if you already have your own status line, the pet does not replace it. If you move the pet folder, the paths in the settings are updated on the next start. The hooks are turned off with the menu items **«Следить за Claude Code»** ("Watch Claude Code") and **«Показывать лимиты подписки»** ("Show subscription limits").
 
-Настройки и служебные файлы питомца хранятся в `%USERPROFILE%\.claude-desktop-pet`. Если задана переменная `CLAUDE_CONFIG_DIR`, каталог Claude Code берётся из неё.
+The pet's settings and service files are stored in `%USERPROFILE%\.claude-desktop-pet`. If the `CLAUDE_CONFIG_DIR` variable is set, the Claude Code folder is taken from it.
 
-## Ограничения
+## Limitations
 
-- Работает только в Windows.
-- Проценты лимитов приходят только на подписках Pro и Max, причём после первого ответа в сессии Claude Code.
-- Часть данных питомец читает из внутренних файлов приложения Claude. Их формат не документирован и может измениться после обновления Claude. В этом случае соответствующие показатели просто пропадут, а сам питомец продолжит работать.
-- Слежение за обычным чатом узнаёт кнопку остановки ответа только в английском и русском интерфейсе. Для другого языка добавьте название кнопки в `$StopNames` в `chat_watch.ps1`.
+- Windows only.
+- Limit percentages are available only on Pro and Max subscriptions, and only after the first reply in a Claude Code session.
+- Some data is read from internal files of the Claude app. Their format is undocumented and may change after a Claude update. If that happens, the affected indicators simply disappear, and the pet keeps working.
+- Regular chat tracking recognizes the stop button only in the English and Russian Claude interface. For another language, add the button's name to `$StopNames` in `chat_watch.ps1`.
 
-## Удаление
+## Uninstalling
 
-1. Снимите в меню галочки «Следить за Claude Code», «Показывать лимиты подписки» и «Запускать вместе с Windows». Так хуки и автозапуск будут убраны.
-2. Закройте питомца.
-3. Удалите папку питомца и папку `%USERPROFILE%\.claude-desktop-pet`.
+1. In the menu, uncheck «Следить за Claude Code», «Показывать лимиты подписки» and «Запускать вместе с Windows». This removes the hooks and autostart.
+2. Close the pet.
+3. Delete the pet folder and the `%USERPROFILE%\.claude-desktop-pet` folder.
 
-## Лицензия
+## License
 
-[MIT](LICENSE): можно свободно использовать, изменять и распространять с сохранением имени автора.
+[MIT](LICENSE): free to use, modify and distribute as long as the author's name is kept.
 
 ---
 
-Неофициальный проект, не связан с Anthropic.
+Unofficial project, not affiliated with Anthropic.

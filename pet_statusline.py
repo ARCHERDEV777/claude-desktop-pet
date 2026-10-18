@@ -18,6 +18,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from pet_i18n import tr
+
 USAGE_DIR = Path.home() / ".claude-desktop-pet" / "usage"
 WINDOWS = ("five_hour", "seven_day")
 
@@ -63,12 +65,12 @@ def main():
 
     # Строка для Claude Code: «5ч 23% до 18:40 · нед 41% · ctx 8%»
     parts = []
-    for name, short in (("five_hour", "5ч"), ("seven_day", "нед")):
+    for name, short in (("five_hour", tr("5ч")), ("seven_day", tr("нед"))):
         lim = limits.get(name)
         if lim:
             text = f"{short} {lim['used_percentage']:.0f}%"
             if name == "five_hour" and lim.get("resets_at"):
-                text += f" до {datetime.fromtimestamp(lim['resets_at']):%H:%M}"
+                text += f"{tr(' до ')}{datetime.fromtimestamp(lim['resets_at']):%H:%M}"
             parts.append(text)
     if record["context_pct"] is not None:
         parts.append(f"ctx {float(record['context_pct']):.0f}%")
