@@ -67,6 +67,12 @@ EN = {
     "Питомец Claude": "Claude pet",
     "Не удалось найти установленное приложение Claude.": "Could not find the installed Claude app.",
     "Не удалось открыть {what}.": "Could not open {what}.",
+    "Не удалось запустить Claude.": "Could not launch Claude.",
+    "Запуск Claude отменён.": "Claude launch cancelled.",
+    "Claude не нашёлся за {sec} с — похоже, приложение не установлено.":
+        "Claude was not found within {sec} s — the app seems not to be installed.",
+    "Ищу приложение Claude…\nКликните по питомцу ещё раз, чтобы отменить.":
+        "Looking for the Claude app…\nClick the pet again to cancel.",
 
     # --- главное меню ---
     "Запустить Claude": "Launch Claude",
@@ -205,6 +211,21 @@ EN = {
     "Очистить": "Clear",
     "Отмена": "Cancel",
     "Нужен формат ДД.ММ.ГГГГ, например 31.10.2026": "Use the DD.MM.YYYY format, e.g. 31.10.2026",
+
+    # --- окно «Контекст и предупреждения» ---
+    "Контекст и предупреждения…": "Context and warnings…",
+    "Контекст и предупреждения": "Context and warnings",
+    "Модель текущей сессии: {model}": "Current session model: {model}",
+    "неизвестна": "unknown",
+    "Лимит контекста модели, токенов (например 1000000 или 200k):":
+        "Model context limit, tokens (e.g. 1000000 or 200k):",
+    "Предупреждать о смене чата при заполнении, %:": "Suggest a new chat when context is this full, %:",
+    "Без лимита модели предупреждение приходит по порогу {tokens} токенов.":
+        "Without a model limit the warning comes at {tokens} tokens.",
+    "Сбросить лимит модели": "Reset model limit",
+    "Порог — целое число от {lo} до {hi}": "The threshold must be a whole number from {lo} to {hi}",
+    "Лимит — число токенов не меньше {n}, например 1000000 или 200k":
+        "The limit must be at least {n} tokens, e.g. 1000000 or 200k",
 
     # --- форматирование времени и чисел (pet_stats.py) ---
     "{n:.1f} млрд": "{n:.1f} B",

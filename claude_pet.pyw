@@ -12,7 +12,7 @@
   • наведение на питомца — подсказка: лимиты 5 ч и недели, контекст, токены, дата продления;
   • лимит исчерпан — грустные глаза и таймер до сброса на мордочке;
   • Claude не активен RUNNING_GRACE (3 мин) или не запущен — питомец спит:
-    глаза закрыты, тело бледнее, над головой «z»;
+    глаза закрыты, тело бледнее, над головой «z»; наведение мыши будит его в любом случае;
   • уведомления-пузыри: 80 % и 95 % лимита, сброс лимита, полный контекст, скорое продление.
 
 Запуск: «Запустить питомца.vbs» рядом с этим файлом (или pythonw claude_pet.pyw).
@@ -36,6 +36,7 @@ import json
 import math
 import os
 import random
+import re
 import subprocess
 import sys
 import threading
@@ -91,7 +92,7 @@ DATA_DIR = Path.home() / ".claude-desktop-pet"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 STATE_PATH = DATA_DIR / "state.json"  # текущее состояние питомца — для диагностики
 OLD_SETTINGS_PATH = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME / "settings.json"
-SIZES = {"Маленький": 56*2, "Средний": 72*2, "Большой": 96*2, "Гигантский": 144*2}
+SIZES = {"Маленький": 60, "Средний": 90, "Большой": 120, "Гигантский": 150}
 
 IDLE_DELAY = 5        # через сколько секунд без мыши питомец сворачивается
 IDLE_SCALE = 0.6      # размер в свёрнутом виде
@@ -142,12 +143,17 @@ Z_STEPS = 24                 # кадров анимации «z» в кэше
 LIMIT_ICONS = {"five_hour": "⏳", "seven_day": "📅"}  # иконки строк лимитов в подсказке
 TIP_DELAY = 0.8             # через сколько секунд наведения показывать подсказку
 NOTIFY_THRESHOLDS = (80, 95)  # % лимита, при которых приходит уведомление
-CONTEXT_WARN = 80            # % контекста сессии — совет сделать /compact (только терминальный Claude Code)
-CONTEXT_WARN_TOKENS = 700_000  # токенов в контексте сессии — тот же совет по журналу (для приложения)
+CONTEXT_WARN = 80            # % контекста сессии — совет сделать /compact (по умолчанию; меняется в меню)
+CONTEXT_WARN_TOKENS = 700_000  # токенов в контексте — тот же совет, если лимит модели в настройках не задан
+CONTEXT_WARN_RANGE = (1, 100)  # допустимый порог предупреждения, %
+CONTEXT_LIMIT_MIN = 1_000      # меньше — явно опечатка в лимите токенов модели
 SESSIONS_DAYS = 3            # за сколько дней показывать сессии в окне «Статистика»
 SESSIONS_SHOW = 8            # сколько сессий показывать
 RENEWAL_WARN_DAYS = 3        # за сколько дней напоминать о продлении подписки
 NOTIFY_SECONDS = 9           # сколько секунд висит пузырь
+LAUNCH_TIMEOUT = 20          # сколько секунд ждать поиска приложения Claude, потом считать, что его нет
+LAUNCH_POLL_MS = 200         # как часто проверять, закончился ли фоновый поиск
+LAUNCH_HINT_DELAY = 1.0      # если поиск дольше стольких секунд — пузырь «Ищу Claude…» с подсказкой об отмене
 NOTIFIED_KEEP = 200          # сколько ключей отправленных уведомлений хранить в настройках
 STATS_DAYS = 7               # глубина таблиц в окне «Статистика», дней
 FOLDERS_MAX = 25             # сколько папок проектов показывать в меню «Открыть папку»
@@ -321,8 +327,14 @@ def claude_running(app_only=False) -> bool:
     return False
 
 
-def claude_launch_command():
-    """Как запустить Claude на этом ПК: версия из Microsoft Store или обычная установка."""
+def claude_launch_command(cancel=None):
+    """
+    Как запустить Claude на этом ПК: версия из Microsoft Store или обычная установка.
+    cancel — threading.Event: поиск идёт в фоновом потоке и бросается, как только его отменили.
+    """
+    def cancelled():
+        return cancel is not None and cancel.is_set()
+
     exe = None
     try:  # путь к приложению из обработчика ссылок claude://
         with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r"claude\shell\open\command") as key:
@@ -333,9 +345,16 @@ def claude_launch_command():
     if not exe:
         # Вне пакета Claude ссылки claude:// в реестре не видно — ищем папку пакета Store.
         packages = Path.home() / "AppData" / "Local" / "Packages"
-        for package in sorted(packages.glob("Claude_*")):
-            if package.is_dir():
-                return ["explorer.exe", f"shell:AppsFolder\\{package.name}!Claude"]
+        try:
+            for package in sorted(packages.glob("Claude_*")):
+                if cancelled():
+                    return None
+                if package.is_dir():
+                    return ["explorer.exe", f"shell:AppsFolder\\{package.name}!Claude"]
+        except OSError:
+            pass
+        if cancelled():
+            return None
         local = Path(os.environ.get("LOCALAPPDATA", "")) / "AnthropicClaude" / "claude.exe"
         exe = str(local) if local.exists() else None
     if exe and "\\windowsapps\\" in exe.lower():
@@ -1019,6 +1038,101 @@ class RenewalDialog:
         self.top.destroy()
 
 
+def parse_tokens(text):
+    """«1000000», «1 000 000», «200k», «1м» → число токенов; не разобрать — None."""
+    value = re.sub(r"[\s_]", "", text).lower().replace(",", ".")
+    mult = 1
+    if value[-1:] in ("k", "к"):
+        value, mult = value[:-1], 1_000
+    elif value[-1:] in ("m", "м"):
+        value, mult = value[:-1], 1_000_000
+    try:
+        return int(float(value) * mult)
+    except ValueError:
+        return None
+
+
+class ContextDialog:
+    """
+    Лимит контекста (токенов) для модели текущей сессии и порог предупреждения в %.
+    Лимиты хранятся по моделям: settings["context_limits"] = {"claude-opus-5-5": 1000000},
+    порог — общий: settings["context_warn"].
+    """
+
+    def __init__(self, pet, model):
+        self.pet, self.model = pet, model
+        s = pet.scale
+        self.top = top = tk.Toplevel(pet.root)
+        top.title(tr("Контекст и предупреждения"))
+        top.configure(bg=MENU_BG)
+        top.attributes("-topmost", True)
+        top.resizable(False, False)
+        pad = {"padx": int(12 * s), "pady": int(4 * s)}
+        tk.Label(top, text=tr("Модель текущей сессии: {model}", model=model or tr("неизвестна")),
+                 justify="left", bg=MENU_BG, fg=MENU_FG, font=TIP_FONT).pack(anchor="w", **pad)
+        limit = pet.context_limit(model)
+        self.limit_var = tk.StringVar(value=f"{limit:,}".replace(",", " ") if limit else "")
+        self.warn_var = tk.StringVar(value=str(pet.context_warn()))
+        entries = []
+        for label, var in ((tr("Лимит контекста модели, токенов (например 1000000 или 200k):"), self.limit_var),
+                           (tr("Предупреждать о смене чата при заполнении, %:"), self.warn_var)):
+            tk.Label(top, text=label, justify="left", bg=MENU_BG, fg=MENU_FG, font=TIP_FONT).pack(anchor="w", **pad)
+            entry = tk.Entry(top, textvariable=var, font=TIP_FONT, bg="#1e1e1e", fg=MENU_FG,
+                             insertbackground=MENU_FG, relief="flat", width=14)
+            entry.pack(anchor="w", **pad)
+            entry.bind("<Return>", lambda e: self.save())
+            entries.append(entry)
+        if not model:
+            entries[0].configure(state="disabled")  # лимит привязан к модели — без неё задавать некуда
+        tk.Label(top, text=tr("Без лимита модели предупреждение приходит по порогу {tokens} токенов.",
+                              tokens=ps.fmt_tokens(CONTEXT_WARN_TOKENS)),
+                 justify="left", bg=MENU_BG, fg=MENU_DIM, font=TIP_FONT).pack(anchor="w", **pad)
+        self.error = tk.Label(top, text="", bg=MENU_BG, fg="#f06050", font=TIP_FONT)
+        self.error.pack(anchor="w", padx=int(12 * s))
+        bar = tk.Frame(top, bg=MENU_BG)
+        bar.pack(fill="x", padx=int(12 * s), pady=int(10 * s))
+        for text, cmd in ((tr("Сохранить"), self.save), (tr("Сбросить лимит модели"), self.clear),
+                          (tr("Отмена"), top.destroy)):
+            tk.Button(bar, text=text, command=cmd, bg=MENU_HOVER, fg=MENU_FG, activebackground=MENU_SEP,
+                      activeforeground=MENU_FG, relief="flat", padx=int(10 * s)).pack(side="left", padx=(0, int(6 * s)))
+        top.bind("<Escape>", lambda e: top.destroy())
+        top.update_idletasks()
+        w, h = top.winfo_reqwidth(), top.winfo_reqheight()
+        x, y = place_beside(pet, w, h)
+        top.geometry(f"+{x}+{y}")
+        entries[0 if model else 1].focus_force()
+
+    def save(self):
+        lo, hi = CONTEXT_WARN_RANGE
+        try:
+            warn = int(self.warn_var.get().strip().rstrip("%"))
+        except ValueError:
+            warn = None
+        if warn is None or not lo <= warn <= hi:
+            self.error.configure(text=tr("Порог — целое число от {lo} до {hi}", lo=lo, hi=hi))
+            return
+        limits = self.pet.settings.setdefault("context_limits", {})
+        text = self.limit_var.get().strip()
+        if self.model and text:
+            limit = parse_tokens(text)
+            if limit is None or limit < CONTEXT_LIMIT_MIN:
+                self.error.configure(text=tr("Лимит — число токенов не меньше {n}, например 1000000 или 200k",
+                                             n=CONTEXT_LIMIT_MIN))
+                return
+            limits[self.model] = limit
+        elif self.model:
+            limits.pop(self.model, None)  # пустое поле — лимит модели не задан
+        self.pet.settings["context_warn"] = warn
+        self.pet.save_settings()
+        self.top.destroy()
+
+    def clear(self):
+        if self.model:
+            self.pet.settings.get("context_limits", {}).pop(self.model, None)
+            self.pet.save_settings()
+        self.top.destroy()
+
+
 # --- Приложение ------------------------------------------------------------
 
 class Pet:
@@ -1065,12 +1179,14 @@ class Pet:
         self.app_seen = False      # был ли claude.exe при прошлой проверке (ловим момент запуска)
         self.last_launch = 0.0     # когда Claude запустили: запуск будит питомца
         self.idle_for = 0.0        # сколько секунд нет активности Claude
+        self.rest_idle = None      # idle_for в момент, когда наведение разбудило питомца (для подсказки)
         self.block = None          # (окно, время сброса), если лимит исчерпан
         self.was_blocked = False
         self.hover_since = None
         self.tip = None
         self.bubble = None
         self.stats_window = None
+        self.launch = None         # идущий поиск/запуск Claude: {"cancel", "result", "deadline"}
 
         self.apply_size()
         x, y = self.settings.get("x"), self.settings.get("y")
@@ -1186,11 +1302,17 @@ class Pet:
 
         size = int(self.size * (IDLE_SCALE + (1 - IDLE_SCALE) * self.expand)) // 2 * 2
         hover = dist <= size / 2 and self.drag is None
-        if hover and self.app_running:
-            # наведение — тоже активность: таймер сна сбрасывается, питомец просыпается сразу.
-            # При выключенном Claude спит дальше — там сон не по таймеру.
+        if hover:
+            # наведение — тоже активность: таймер сна сбрасывается, питомец просыпается сразу,
+            # даже при выключенном Claude (и засыпает снова через RUNNING_GRACE без активности).
+            if not self.running and not self.busy and self.rest_idle is None:
+                # разбудили наведением: подсказка появится позже, когда питомец уже не спит,
+                # поэтому запоминаем, сколько Claude был без активности, — для строки «отдыхает»
+                self.rest_idle = self.idle_for
             self.last_touch = now
             self.running = True
+        elif not hover:
+            self.rest_idle = None
         sleeping = not self.running and not self.busy
         if sleeping:
             mood = "sleep"
@@ -1340,6 +1462,10 @@ class Pet:
         notified.append(key)
         del notified[:-NOTIFIED_KEEP]
         self.save_settings()
+        self.show_bubble(text)
+
+    def show_bubble(self, text):
+        """Показать пузырь сразу, заменив прежний."""
         if self.bubble:
             self.bubble.close()
         self.bubble = Bubble(self, text)
@@ -1373,17 +1499,27 @@ class Pet:
             reset = self.block[1]
             self.notify(f"block:{int(reset)}", tr("⛔ Лимит исчерпан.\nСброс {at} (через {left}).",
                                                   at=ps.fmt_reset(reset, now), left=ps.fmt_left(reset - now)))
-        # Контекст: процент есть только у терминального Claude Code (status line),
-        # для остальных сессий — порог в токенах по журналу. Ключ общий: одно уведомление на сессию.
+        # Контекст: процент даёт status line терминального Claude Code; для остальных сессий —
+        # токены из журнала против лимита модели из настроек, а без лимита — порог CONTEXT_WARN_TOKENS.
+        # Ключ общий: одно уведомление на сессию.
+        warn = self.context_warn()
         for sid, s in self.journal.recent_sessions(now - SESSION_FRESH):
-            if s["context"] >= CONTEXT_WARN_TOKENS:
+            project = self.journal.project_of(s['cwd'])
+            limit = self.context_limit(s.get("model"))
+            if limit:
+                pct = s["context"] / limit * 100
+                if pct >= warn:
+                    self.notify(f"ctx:{sid}",
+                                tr("🧠 Контекст сессии ({project}) заполнен на {pct:.0f} %.\n"
+                                   "Пора сделать /compact или начать новую сессию.", project=project, pct=pct))
+            elif s["context"] >= CONTEXT_WARN_TOKENS:
                 self.notify(f"ctx:{sid}",
                             tr("🧠 Контекст сессии ({project}): {tokens} токенов.\n"
                                "Пора сделать /compact или начать новую сессию.",
-                               project=self.journal.project_of(s['cwd']), tokens=ps.fmt_tokens(s['context'])))
+                               project=project, tokens=ps.fmt_tokens(s['context'])))
         for rec in self.usage["sessions"]:
             ctx = rec.get("context_pct")
-            if ctx is not None and float(ctx) >= CONTEXT_WARN and now - float(rec["updated"]) < SESSION_FRESH:
+            if ctx is not None and float(ctx) >= warn and now - float(rec["updated"]) < SESSION_FRESH:
                 project = self.journal.project_of(rec.get("cwd"))
                 self.notify(f"ctx:{rec['session_id']}",
                             tr("🧠 Контекст сессии ({project}) заполнен на {pct:.0f} %.\n"
@@ -1413,12 +1549,31 @@ class Pet:
         recent = self.journal.recent_sessions(now - SESSION_FRESH)
         return self.session_info(*recent[0]) if recent else None
 
-    @staticmethod
-    def session_line(info, now):
+    def context_limit(self, model):
+        """Лимит контекста модели (токенов) из настроек или None, если не задан."""
+        limit = self.settings.get("context_limits", {}).get(model or "")
+        return int(limit) if isinstance(limit, (int, float)) and limit > 0 else None
+
+    def context_warn(self):
+        """Порог предупреждения о заполнении контекста, % (из настроек или CONTEXT_WARN)."""
+        lo, hi = CONTEXT_WARN_RANGE
+        value = self.settings.get("context_warn", CONTEXT_WARN)
+        return value if isinstance(value, int) and lo <= value <= hi else CONTEXT_WARN
+
+    def open_context_dialog(self):
+        """Диалог лимита контекста: модель — у самой свежей сессии в журнале, сколько бы ей ни было."""
+        self.refresh_journal(wait=True)
+        recent = self.journal.recent_sessions(0)
+        ContextDialog(self, recent[0][1].get("model") if recent else None)
+
+    def session_line(self, info, now):
         """«контекст 393 тыс ток. (39 %) · opus-5-5 · 2 мин назад · $3.20» — что известно."""
         ctx = tr("контекст {tokens} ток.", tokens=ps.fmt_tokens(info['context']))
+        limit = self.context_limit(info.get("model"))
         if info.get("context_pct") is not None:
             ctx += f" ({float(info['context_pct']):.0f} %)"
+        elif limit:
+            ctx += f" ({info['context'] / limit * 100:.0f} %)"  # процент по лимиту модели из настроек
         parts = [ctx]
         if info.get("model"):
             parts.append(ps.short_model(info["model"]))
@@ -1467,8 +1622,10 @@ class Pet:
         if not self.app_running and not self.busy:
             return tr("💤 Claude выключен — нажми, и я его открою")
         lines = []
-        if not self.running and not self.busy:
-            lines.append(tr("💤 Claude отдыхает — нет активности {left}", left=ps.fmt_left(self.idle_for)))
+        if not self.busy and (self.rest_idle is not None or not self.running):
+            # питомец спал, пока на него не навели курсор (или спит, если подсказку показали без наведения)
+            idle = self.rest_idle if self.rest_idle is not None else self.idle_for
+            lines.append(tr("💤 Claude отдыхает — нет активности {left}", left=ps.fmt_left(idle)))
         elif self.busy:
             code, chat = self.thinking_who
             who = tr("Claude Code и чат") if code and chat else ("Claude Code" if code else tr("чат"))
@@ -1613,20 +1770,76 @@ class Pet:
             self.toggle_claude(drag["foreground"])
 
     def toggle_claude(self, foreground=None):
+        if self.launch:
+            # повторный клик во время поиска — отмена
+            self.cancel_launch(tr("Запуск Claude отменён."))
+            return
         hwnd = find_claude_window()
         if hwnd is None:
-            command = claude_launch_command()
-            if command is None:
-                user32.MessageBoxW(None, tr("Не удалось найти установленное приложение Claude."), tr("Питомец Claude"), 0x30)
-                return
-            try:
-                subprocess.Popen(command)
-            except OSError:
-                pass
+            self.start_launch()
         elif foreground == hwnd and not user32.IsIconic(hwnd):
             user32.ShowWindow(hwnd, SW_MINIMIZE)
         else:
             bring_to_front(hwnd)
+
+    # запуск Claude: ищем приложение в фоновом потоке, чтобы питомец не зависал
+    def start_launch(self):
+        now = time.time()
+        self.launch = launch = {"cancel": threading.Event(), "result": None,
+                                "hint_at": now + LAUNCH_HINT_DELAY, "deadline": now + LAUNCH_TIMEOUT,
+                                "hint": None}
+        threading.Thread(target=self.launch_worker, args=(launch,), daemon=True).start()
+        self.root.after(LAUNCH_POLL_MS, self.poll_launch, launch)
+
+    @staticmethod
+    def launch_worker(launch):
+        """Фоновый поток: найти и запустить Claude. Итог — в launch["result"]; интерфейс здесь не трогаем."""
+        try:
+            command = claude_launch_command(launch["cancel"])
+            if launch["cancel"].is_set():
+                return  # отменили или истёк таймаут — уже не запускаем
+            if command is None:
+                launch["result"] = "missing"
+                return
+            subprocess.Popen(command)
+            launch["result"] = "started"
+        except Exception:
+            launch["result"] = "failed"
+
+    def poll_launch(self, launch):
+        if self.launch is not launch:
+            return  # этот поиск уже отменён
+        result = launch["result"]
+        if result is not None:
+            self.finish_launch()
+            if result == "missing":
+                self.show_bubble(tr("Не удалось найти установленное приложение Claude."))
+            elif result == "failed":
+                self.show_bubble(tr("Не удалось запустить Claude."))
+            return
+        now = time.time()
+        if now >= launch["deadline"]:
+            self.cancel_launch(tr("Claude не нашёлся за {sec} с — похоже, приложение не установлено.",
+                                  sec=LAUNCH_TIMEOUT))
+            return
+        if launch["hint"] is None and now >= launch["hint_at"]:
+            self.show_bubble(tr("Ищу приложение Claude…\nКликните по питомцу ещё раз, чтобы отменить."))
+            launch["hint"] = self.bubble
+        self.root.after(LAUNCH_POLL_MS, self.poll_launch, launch)
+
+    def finish_launch(self):
+        """Забыть текущий поиск и убрать пузырь «Ищу Claude…», если он ещё висит."""
+        launch, self.launch = self.launch, None
+        if launch and launch["hint"] is not None and self.bubble is launch["hint"]:
+            self.bubble.close()
+
+    def cancel_launch(self, text):
+        # Поток может застрять в системном вызове — его не ждём: он daemon и,
+        # увидев флаг отмены, сам ничего не запустит.
+        if self.launch:
+            self.launch["cancel"].set()
+        self.finish_launch()
+        self.show_bubble(text)
 
     @staticmethod
     def open_claude_link(url, what):
@@ -1729,6 +1942,7 @@ class Pet:
             {"label": tr("Уведомления"), "checked": self.settings.get("notify", True),
              "command": self.toggle_notify},
             {"label": tr("Дата продления подписки…"), "command": lambda: RenewalDialog(self)},
+            {"label": tr("Контекст и предупреждения…"), "command": self.open_context_dialog},
             None,
             {"label": tr("Запускать вместе с Windows"), "checked": autostart_enabled(),
              "command": lambda: set_autostart(not autostart_enabled())},

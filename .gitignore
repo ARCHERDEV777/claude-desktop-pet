@@ -4,9 +4,12 @@ __pycache__/
 .venv/
 venv/
 
-# Временные файлы
+# Temporary files
 *.tmp
 *.log
+
+# Demo video (too heavy for the repository)
+demo.mp4
 
 # Windows
 Thumbs.db
