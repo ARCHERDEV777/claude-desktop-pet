@@ -34,24 +34,100 @@ JOURNALS_DIR = CLAUDE_DIR / "projects"
 CLI_CONFIGS = [CLAUDE_DIR / ".claude.json", Path.home() / ".claude.json"]  # ключ "projects" — папки проектов
 
 
-def app_data_dirs():
-    """
-    Папки данных десктоп-приложения Claude. Обычная установка — %APPDATA%\\Claude;
-    версия из Microsoft Store может держать их в своей песочнице Packages\\Claude_*.
-    """
+APP_DIR_MARKER = "plan-usage-history.json"  # по этому файлу узнаём папку данных приложения
+APP_DIR_SCAN_DEPTH = 3          # на сколько уровней вглубь искать папку при переезде приложения
+APP_DIR_RESCAN_SEC = 300        # не чаще — повторный поиск, если папка не найдена или пропала
+# папки профиля, где данных приложения быть не может: поиск их не открывает
+APP_DIR_SKIP = {"packages", "temp", "microsoft", "google", "cache", "code cache", "gpucache", "crashpad"}
+
+_app_dir = None         # найденная папка данных приложения (после проверки — без поиска)
+_app_dir_next_scan = 0.0
+
+
+def _known_app_dirs():
+    """Привычные места: %APPDATA%\\Claude, песочница Store Packages\\Claude_*, Local\\Claude-Data\\*."""
     dirs = []
     roaming = os.environ.get("APPDATA")
     if roaming:
         dirs.append(Path(roaming) / "Claude")
-    packages = Path.home() / "AppData" / "Local" / "Packages"
+    local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
     try:
-        dirs += [p / "LocalCache" / "Roaming" / "Claude" for p in packages.glob("Claude_*")]
+        dirs += [p / "LocalCache" / "Roaming" / "Claude" for p in (local / "Packages").glob("Claude_*")]
+        dirs += [p for p in (local / "Claude-Data").glob("*") if p.is_dir()]
     except OSError:
         pass
-    return [d for d in dirs if d.is_dir()]
+    return dirs
 
 
-APP_USAGE_FILE = "plan-usage-history.json"
+def _scan_for_app_dir():
+    """Ищет в %APPDATA% и %LOCALAPPDATA% папку с файлом APP_DIR_MARKER; самая свежая побеждает."""
+    best, best_time = None, -1.0
+    roots = {os.environ.get("APPDATA"), os.environ.get("LOCALAPPDATA")}
+
+    def walk(folder, depth):
+        nonlocal best, best_time
+        try:
+            with os.scandir(folder) as it:
+                entries = list(it)
+        except OSError:
+            return
+        for e in entries:
+            try:
+                if e.is_file() and e.name == APP_DIR_MARKER:
+                    mtime = e.stat().st_mtime
+                    if mtime > best_time:
+                        best, best_time = Path(folder), mtime
+                elif depth > 0 and e.is_dir(follow_symlinks=False) and e.name.lower() not in APP_DIR_SKIP:
+                    walk(e.path, depth - 1)
+            except OSError:
+                continue
+
+    for root in roots:
+        if root:
+            walk(root, APP_DIR_SCAN_DEPTH)
+    return best
+
+
+def _locate_app_dir():
+    """
+    Папка данных приложения, найденная автоматически. Пока найденная папка жива
+    (файл-метка на месте), она берётся из памяти — без поиска. Если приложение
+    переехало, ищем заново: сначала привычные места, затем обход профиля.
+    """
+    global _app_dir, _app_dir_next_scan
+    if _app_dir and (_app_dir / APP_DIR_MARKER).is_file():
+        return _app_dir
+    now = time.time()
+    if now < _app_dir_next_scan:
+        return None
+    _app_dir_next_scan = now + APP_DIR_RESCAN_SEC
+    found = next((d for d in _known_app_dirs() if (d / APP_DIR_MARKER).is_file()), None)
+    _app_dir = found or _scan_for_app_dir()
+    return _app_dir
+
+
+def app_data_dirs():
+    """
+    Папки данных десктоп-приложения Claude. Обычная установка — %APPDATA%\\Claude;
+    версия из Microsoft Store может держать их в песочнице Packages\\Claude_*, новые —
+    в Local\\Claude-Data\\*. Если приложение переедет ещё раз, папка находится сама
+    (_locate_app_dir) и дальше используется без поиска.
+    """
+    dirs = []
+    located = _locate_app_dir()
+    if located:
+        dirs.append(located)
+    dirs += _known_app_dirs()
+    seen, out = set(), []
+    for d in dirs:
+        key = os.path.normcase(os.path.normpath(str(d)))
+        if key not in seen and d.is_dir():
+            seen.add(key)
+            out.append(d)
+    return out
+
+
+APP_USAGE_FILE = APP_DIR_MARKER
 APP_USAGE_KEYS = {"five_hour": "fh", "seven_day": "sd"}
 
 WINDOWS = {"five_hour": "5 часов", "seven_day": "Неделя"}
