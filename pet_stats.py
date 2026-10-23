@@ -17,6 +17,7 @@
 """
 
 import json
+import math
 import os
 import threading
 import time
@@ -129,6 +130,12 @@ def app_data_dirs():
 
 APP_USAGE_FILE = APP_DIR_MARKER
 APP_USAGE_KEYS = {"five_hour": "fh", "seven_day": "sd"}
+# Приложение опрашивает лимиты в фоне, только если меню его значка в трее открывали
+# правым кликом не раньше APP_TRAY_WINDOW назад; время клика оно хранит в config.json.
+APP_CONFIG_FILE = "config.json"
+APP_TRAY_KEY = "planUsageLastTrayOpenAt"
+APP_TRAY_WINDOW = 24 * 3600
+APP_POLL_STALE = 20 * 60    # замеры идут раз в 5–15 мин; дольше нет нового — опрос встал
 
 WINDOWS = {"five_hour": "5 часов", "seven_day": "Неделя"}
 WINDOW_SECONDS = {"five_hour": 5 * 3600, "seven_day": 7 * 86400}
@@ -225,19 +232,25 @@ def fmt_reset(ts, now=None):
 
 # --- Status line ---------------------------------------------------------------
 
-def read_usage(now=None, first_answer=None):
+def read_usage(now=None, first_answer=None, week=None):
     """
     Сводка из файлов status line.
 
-    Возвращает {"limits": {окно: {"pct", "resets_at", "updated"}}, "sessions": [...]}.
+    Возвращает {"limits": {окно: {"pct", "resets_at", "updated"}}, "sessions": [...],
+    "expired": {окно: время устаревшего замера приложения},
+    "week_exact": время недельного сброса из status line или None,
+    "tray_open": когда меню значка приложения в трее последний раз открывали (или None),
+    "app_paused": время открытия меню в трее, если приложение перестало опрашивать лимиты, иначе None}.
     Лимиты общие для аккаунта, поэтому по каждому окну берётся самый свежий файл.
     Окно, у которого время сброса уже прошло, считается сброшенным: pct = 0
     и "stale" = True (новых данных ещё нет — придут со следующим ответом Claude).
     first_answer(lo, hi) — первый ответ Claude в промежутке (журнал Code и ChatLog):
-    уточняет оценку сброса.
+    уточняет оценку сброса. week — сохранённое время недельного сброса
+    (learn_week_reset): по нему считается сброс недели для замеров приложения.
     """
     now = now or time.time()
     limits, sessions = {}, []
+    week_exact = None  # (время файла, resets_at недели) — самый свежий из status line
     try:
         files = list(USAGE_DIR.glob("*.json"))
     except OSError:
@@ -257,37 +270,49 @@ def read_usage(now=None, first_answer=None):
                 if name not in limits or updated > limits[name]["updated"]:
                     limits[name] = {"pct": float(lim["used_percentage"]),
                                     "resets_at": lim.get("resets_at"), "updated": updated}
+                if name == "seven_day" and lim.get("resets_at") and (week_exact is None or updated > week_exact[0]):
+                    week_exact = (updated, float(lim["resets_at"]))
     # Замеры десктоп-приложения: берутся, если они свежее status line.
     # Время сброса в них нет — оставляем его из status line, если оно ещё впереди,
-    # иначе для окон из ESTIMATE_RESET_WINDOWS оцениваем по истории замеров ("estimated").
+    # иначе для окон из ESTIMATE_RESET_WINDOWS оцениваем по истории замеров ("estimated";
+    # "bound" — известна лишь верхняя граница: сброс не позже), а для недели берём
+    # сохранённое время её сброса (week).
     for name, (pct, t) in read_app_usage(now).items():
         cur = limits.get(name)
         if cur is None or t > cur["updated"]:
             reset = cur["resets_at"] if cur and cur["resets_at"] and cur["resets_at"] > now else None
-            estimated = False
+            estimated = bound = False
             if reset is None and name in ESTIMATE_RESET_WINDOWS:
-                reset = estimate_app_reset(name, first_answer)
+                reset, bound = estimate_app_reset(name, first_answer)
                 estimated = reset is not None
+            elif reset is None and name == "seven_day":
+                reset = week_reset_after(week, t)
+                estimated = reset is not None and week.get("src") == "auto"
             limits[name] = {"pct": pct, "resets_at": reset, "updated": t, "source": "приложение",
-                            "estimated": estimated}
+                            "estimated": estimated, "bound": bound}
     for lim in limits.values():
         lim.setdefault("source", "status line")
         lim["stale"] = bool(lim["resets_at"]) and lim["resets_at"] <= now
         lim["last_pct"] = lim["pct"]   # значение до сброса — для уведомления «лимит обновился»
         if lim["stale"]:
             lim["pct"] = 0.0
+    # Окна без свежих данных, у которых есть устаревший замер приложения: {окно: время замера} —
+    # чтобы подсказка писала «нет свежих данных», а не молча убирала окно.
+    expired = {name: t for name, (pct, t) in read_app_usage(now, keep_old=True).items() if name not in limits}
     sessions.sort(key=lambda r: -float(r.get("updated") or 0))
-    return {"limits": limits, "sessions": sessions}
+    tray = app_last_tray_open()
+    return {"limits": limits, "sessions": sessions, "expired": expired,
+            "week_exact": week_exact[1] if week_exact else None,
+            "tray_open": tray, "app_paused": app_poll_paused(now, tray)}
 
 
-def read_app_usage(now=None):
+def _app_samples():
     """
-    Последний замер лимитов из plan-usage-history.json приложения:
-    {окно: (процент, время замера)}. Замер старше длины окна отбрасывается —
-    за это время окно гарантированно сбросилось, и процент уже неверен.
+    Замеры из plan-usage-history.json приложения: [(время, {"fh": %, "sd": %})] по возрастанию
+    времени. Только аккаунта (поле org) самого свежего замера: у другого аккаунта свои
+    проценты, и смешанные замеры выглядели бы как ложные сбросы.
     """
-    now = now or time.time()
-    best = {}
+    points = {}  # время -> (org, u); одна папка может найтись по двум путям
     for d in app_data_dirs():
         try:
             samples = json.loads((d / APP_USAGE_FILE).read_text(encoding="utf-8")).get("samples") or []
@@ -295,16 +320,64 @@ def read_app_usage(now=None):
             continue
         for s in samples:
             try:
-                t = float(s["t"]) / 1000
-                u = s.get("u") or {}
+                u = s.get("u")
+                if isinstance(u, dict):
+                    points[float(s["t"]) / 1000] = (s.get("org"), u)
+            except (KeyError, TypeError, ValueError, AttributeError):
+                continue
+    if not points:
+        return []
+    org = points[max(points)][0]
+    return [(t, u) for t, (o, u) in sorted(points.items()) if o == org]
+
+
+def read_app_usage(now=None, keep_old=False):
+    """
+    Последний замер лимитов из plan-usage-history.json приложения:
+    {окно: (процент, время замера)}. Замер старше длины окна отбрасывается —
+    за это время окно гарантированно сбросилось, и процент уже неверен.
+    keep_old=True — не отбрасывать (нужно только время последнего замера).
+    """
+    now = now or time.time()
+    best = {}
+    for t, u in _app_samples():
+        for name, key in APP_USAGE_KEYS.items():
+            try:
+                pct = float(u[key])
             except (KeyError, TypeError, ValueError):
                 continue
-            for name, key in APP_USAGE_KEYS.items():
-                if u.get(key) is None or now - t > WINDOW_SECONDS[name]:
-                    continue
-                if name not in best or t > best[name][1]:
-                    best[name] = (float(u[key]), t)
+            if keep_old or now - t <= WINDOW_SECONDS[name]:
+                best[name] = (pct, t)   # замеры по возрастанию времени: последний — самый свежий
     return best
+
+
+def app_last_tray_open():
+    """Когда меню значка приложения в трее последний раз открывали правым кликом (из config.json) или None."""
+    times = []
+    for d in app_data_dirs():
+        try:
+            value = json.loads((d / APP_CONFIG_FILE).read_text(encoding="utf-8")).get(APP_TRAY_KEY)
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(value, (int, float)) and value > 0:
+            times.append(value / 1000)
+    return max(times, default=None)
+
+
+def app_poll_paused(now=None, tray=None):
+    """
+    Приложение перестало опрашивать лимиты: значок в трее давно не открывали, и новых
+    замеров нет. Возвращает время последнего открытия меню (ключ для уведомления) или None.
+    tray — уже прочитанное app_last_tray_open(), чтобы не читать config.json второй раз.
+    """
+    now = now or time.time()
+    tray = tray or app_last_tray_open()
+    if tray is None or now - tray < APP_TRAY_WINDOW:
+        return None
+    samples = _app_samples()
+    if samples and now - samples[-1][0] < APP_POLL_STALE:
+        return None
+    return tray
 
 
 CHAT_LOG_PATH = USAGE_DIR.parent / "chat_answers.json"  # когда начинались ответы обычного чата
@@ -343,20 +416,13 @@ class ChatLog:
 
 def app_usage_series(key):
     """Все замеры одного окна из plan-usage-history.json: [(время, процент)] по возрастанию времени."""
-    points = {}
-    for d in app_data_dirs():
+    out = []
+    for t, u in _app_samples():
         try:
-            samples = json.loads((d / APP_USAGE_FILE).read_text(encoding="utf-8")).get("samples") or []
-        except (OSError, ValueError, AttributeError):
+            out.append((t, float(u[key])))
+        except (KeyError, TypeError, ValueError):
             continue
-        for s in samples:
-            try:
-                v = (s.get("u") or {}).get(key)
-                if v is not None:
-                    points[float(s["t"]) / 1000] = float(v)
-            except (KeyError, TypeError, ValueError, AttributeError):
-                continue
-    return sorted(points.items())
+    return out
 
 
 def estimate_app_reset(name, first_answer=None):
@@ -369,36 +435,133 @@ def estimate_app_reset(name, first_answer=None):
     Момент начала уточняем первым ответом в этом промежутке — в журнале Claude Code
     или в ChatLog обычного чата (first_answer(lo, hi) -> время или None), иначе берём время замера — тогда
     оценка позже настоящей не больше чем на интервал между замерами.
-    None — оценить нельзя (история начинается посреди окна, а сброса в ней ещё не было).
-    Время в прошлом — окно уже истекло, новых замеров после этого не было.
+    Возвращает (время сброса или None, bound). bound=True — история начинается посреди окна:
+    его начало неизвестно, но оно не позже первого замера, так что сброс — не позже
+    первого замера + длина окна. Время в прошлом — окно уже истекло, новых замеров не было.
     """
     window = WINDOW_SECONDS[name]
     start, known = None, False  # known — состояние окна известно (до первого замера — нет)
+    bound = False               # start — лишь верхняя граница начала окна
     prev_t = prev_v = None
 
     def begin(lo, hi):
-        if first_answer and lo is not None:
+        # Между замерами могло пройти несколько окон (приложение пишет замер только при запуске):
+        # окно, начатое первым ответом, истекло до замера hi — значит, процент замера набран
+        # в более позднем окне, и его начало ищем среди ответов после конца этого.
+        while first_answer and lo is not None:
             ts = first_answer(lo, hi)
-            if ts:
+            if not ts:
+                break
+            if ts + window > hi:
                 return ts
+            lo = ts + window
         return hi
 
     for t, v in app_usage_series(APP_USAGE_KEYS[name]):
         lo = prev_t
         if start is not None and t >= start + window:   # окно истекло между замерами
-            lo = max(lo, start + window) if lo is not None else start + window
-            start, known = None, True
+            # при известном начале новое окно — не раньше конца прошлого; при границе
+            # прошлое могло кончиться раньше, и конец его неизвестен
+            if not bound:
+                lo = max(lo, start + window) if lo is not None else start + window
+            start, known, bound = None, True, False
         dropped = prev_v is not None and v < prev_v
         if v <= 0:
             if dropped or start is None:
-                start, known = None, True
+                start, known, bound = None, True, False
         elif dropped:
             # lo — не раньше конца прошлого окна: ответы до него ещё относились к старому окну
-            start, known = begin(lo, t), True
+            start, known, bound = begin(lo, t), True, False
         elif start is None and known:
             start = begin(lo, t)
+        elif start is None:
+            start, bound = t, True   # история начинается посреди окна: оно началось не позже
         prev_t, prev_v = t, v
-    return start + window if start is not None else None
+    return (start + window, bound) if start is not None else (None, False)
+
+
+# --- Недельный сброс ---------------------------------------------------------------
+# Неделя сбрасывается в один и тот же момент каждые 7 дней — он привязан к аккаунту, а не
+# к первому запросу. Время сброса хранится как {"lo", "hi", "src"}: сброс был в промежутке
+# (lo, hi] и повторяется через WEEK. src — откуда он известен: "status line" (точное время),
+# "auto" (по падению процента в замерах приложения) или "manual" (задан вручную).
+# Вычисленное питомцем (status line, auto) всегда важнее ручного: ручное нужно,
+# только пока вычислить не из чего (week_reset_effective).
+
+WEEK = WINDOW_SECONDS["seven_day"]
+WEEK_MAX_GAP = WEEK / 2   # падение между замерами дальше этого друг от друга почти ничего не говорит
+
+
+def week_reset_after(info, t):
+    """
+    Первый недельный сброс позже момента t по сохранённому {"lo", "hi"}; None — сброс неизвестен.
+    Берётся верхняя граница: к ней окно сброшено наверняка, и процент раньше времени не обнулится.
+    """
+    try:
+        hi = float(info["hi"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return hi + (math.floor((t - hi) / WEEK) + 1) * WEEK
+
+
+def manual_week_reset(weekday, hour, minute, now=None):
+    """Сброс, заданный вручную днём недели (0 — понедельник) и временем: ближайший такой момент."""
+    now = now or time.time()
+    cur = datetime.fromtimestamp(now)
+    at = cur.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=(weekday - cur.weekday()) % 7)
+    ts = at.timestamp()
+    if ts <= now:
+        ts += WEEK
+    return {"lo": ts, "hi": ts, "src": "manual"}
+
+
+def _merge_week(info, lo, hi):
+    """
+    Сузить сохранённый автоматически промежуток сброса новым (lo, hi]: сбросы повторяются
+    через WEEK, поэтому старый сдвигается на целое число недель и пересекается с новым.
+    Пересечения нет — расписание сменилось, верим новому.
+    """
+    if info and info.get("src") == "auto":
+        k = round((hi - float(info["hi"])) / WEEK)
+        lo2, hi2 = max(lo, float(info["lo"]) + k * WEEK), min(hi, float(info["hi"]) + k * WEEK)
+        if lo2 < hi2:
+            return {"lo": lo2, "hi": hi2, "src": "auto"}
+    return {"lo": lo, "hi": hi, "src": "auto"}
+
+
+def learn_week_reset(info, exact=None):
+    """
+    Вычислить время недельного сброса; info — вычисленное раньше (ручное сюда не входит).
+    Возвращает новый {"lo", "hi", "src"}, прежний info или None — вычислить пока не из чего.
+      1. exact — точное время сброса недели из status line: берётся всегда.
+      2. Уже известно из status line — не трогаем: оно точнее оценки.
+      3. Иначе ищем в замерах приложения падения процента недели: внутри окна процент
+         только растёт, значит, между такими замерами был сброс. Каждое падение сужает
+         промежуток, так что оценка точнее с каждой неделей.
+    """
+    if exact:
+        if info and info.get("src") == "status line" and float(info["hi"]) == float(exact):
+            return info
+        return {"lo": float(exact), "hi": float(exact), "src": "status line"}
+    if info and info.get("src") == "status line":
+        return info
+    prev_t = prev_v = None
+    for t, v in app_usage_series(APP_USAGE_KEYS["seven_day"]):
+        if prev_v is not None and v < prev_v and t - prev_t < WEEK_MAX_GAP:
+            info = _merge_week(info, prev_t, t)
+        prev_t, prev_v = t, v
+    return info
+
+
+def week_reset_effective(learned, manual):
+    """Время сброса, по которому считать: вычисленное питомцем, а пока его нет — заданное вручную."""
+    return learned or manual
+
+
+def fmt_week_reset(info):
+    """«чт 03:00» — день недели и время сброса по сохранённому {"lo", "hi"}."""
+    at = datetime.fromtimestamp(float(info["hi"]))
+    return f"{weekday_name(at.weekday())} {at:%H:%M}"
 
 
 # --- Папки проектов ---------------------------------------------------------------

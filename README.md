@@ -6,7 +6,7 @@ A small desktop pet for Windows that keeps you company while you work with the C
 
 ![Pet states](pet.png)
 
-*The labels in the picture are in Russian. Each one shows a pet state: idle, following the cursor, thinking, limit colors, limit reached, sleeping.*
+*Each label in the picture is given in Russian and English and shows a pet state: idle, following the cursor, thinking, limit colors, limit reached, sleeping.*
 
 ## Features
 
@@ -14,12 +14,13 @@ A small desktop pet for Windows that keeps you company while you work with the C
 - **Drag** with the left mouse button to move the pet around the screen.
 - **Idle.** When the mouse is far away, the pet shrinks into a semi-transparent ball and expands again on hover. Its eyes follow the cursor, and it blinks now and then.
 - **Claude is thinking.** While Claude Code works on a reply, a glowing arc runs clockwise around the halo. For the regular chat, the arc runs counterclockwise.
-- **Halo color** shows subscription limit usage: green below 50 %, yellow up to 80 %, red at 80 % and above.
+- **Halo color** shows 5-hour subscription limit usage: green below 50 %, yellow up to 80 %, red at 80 % and above.
 - **Limit reached.** The pet looks sad and shows a countdown to the reset on its face.
 - **Sleep.** If Claude is not running or has been inactive for 3 minutes, the pet falls asleep.
 - **Hover tooltip:** 5-hour and weekly limits, context usage, tokens, subscription renewal date.
 - **Notification bubbles:** at 80 % and 95 % of the limit, when the limit resets, when the context is full, and before the subscription renews.
 - **Right-click menu:**
+  - launch or quit Claude;
   - quick links into Claude: new chat, recent chats, projects, tasks, connectors, settings;
   - Claude Code: new session, last session, sessions waiting for input, search;
   - project folders;
@@ -69,13 +70,14 @@ The pet's settings and service files are stored in `%USERPROFILE%\.claude-deskto
 
 - Windows only.
 - Limit percentages are available only on Pro and Max subscriptions, and only after the first reply in a Claude Code session.
+- The Code tab in the app does not call the status line, so without Claude Code in a terminal the percentages come from the app's own measurements. The app requests the limits when it starts, and every 5–15 minutes only within a day after you right-clicked its tray icon to open the menu. The pet does this for you: once a day it "clicks" the icon (even when it is hidden behind the tray arrow), choosing a moment when Claude is not in the foreground and you have not pressed anything for a couple of seconds, so no menu appears. Close to the end of the day it clicks anyway, and the menu may flash at the cursor for an instant before the pet closes it. Turn it off in menu → Settings → «Щёлкать по значку Claude в трее» ("Click Claude's tray icon"). If the click does not register, or the option is off, the pet reminds you to right-click the icon yourself. If the measurement is older than 5 hours, the tooltip shows "no fresh data". These measurements have no reset time: the pet works out the weekly reset by itself once it sees the percentage drop, and then repeats it every 7 days. Until it has seen a reset, you can set the day and time manually: menu → Settings → «Недельный сброс лимита…» ("Weekly limit reset…"). The time the pet works out itself always takes priority over the manual one.
 - Some data is read from internal files of the Claude app. Their format is undocumented and may change after a Claude update. If that happens, the affected indicators simply disappear, and the pet keeps working.
 - Regular chat tracking recognizes the stop button only in the English and Russian Claude interface. For another language, add the button's name to `$StopNames` in `chat_watch.ps1`.
 
 ## Uninstalling
 
 1. In the menu, uncheck «Следить за Claude Code», «Показывать лимиты подписки» and «Запускать вместе с Windows». This removes the hooks and autostart.
-2. Close the pet.
+2. Quit the pet (menu item «Выключить питомца», "Quit pet").
 3. Delete the pet folder and the `%USERPROFILE%\.claude-desktop-pet` folder.
 
 ## License

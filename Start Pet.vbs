@@ -50,9 +50,7 @@ TryRun shell.ExpandEnvironmentStrings("%WINDIR%\pyw.exe")
 ' 6) Last resort: pythonw / pyw from PATH
 On Error Resume Next
 For Each candidate In Array("pythonw", "pyw")
-    Err.Clear
-    shell.Run """" & candidate & """ """ & script & """", 0, False
-    If Err.Number = 0 Then WScript.Quit 0
+    If Launch(candidate) Then WScript.Quit 0
 Next
 On Error GoTo 0
 
@@ -105,7 +103,24 @@ End Sub
 
 Sub TryRun(exe)
     If fso.FileExists(exe) Then
-        shell.Run """" & exe & """ """ & script & """", 0, False
-        WScript.Quit 0
+        If Launch(exe) Then WScript.Quit 0
     End If
 End Sub
+
+' Starts exe with the pet script; True on success. The process is created through WMI,
+' so it is not a child of whoever ran this file: started from a Claude Code session,
+' the pet would otherwise sit in that session's job objects and die when Claude quits.
+' If WMI is unavailable, falls back to a plain shell.Run.
+Function Launch(exe)
+    Dim cmd, rc, pid
+    cmd = """" & exe & """ """ & script & """"
+    On Error Resume Next
+    rc = GetObject("winmgmts:\\.\root\cimv2:Win32_Process").Create(cmd, here, Null, pid)
+    If Err.Number = 0 And rc = 0 Then
+        Launch = True
+        Exit Function
+    End If
+    Err.Clear
+    shell.Run cmd, 0, False
+    Launch = (Err.Number = 0)
+End Function

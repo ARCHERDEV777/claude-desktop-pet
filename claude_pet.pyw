@@ -7,7 +7,7 @@
   • пока Claude Code думает над ответом, по ореолу бежит светящаяся дуга
     (сигнал дают хуки в ~/.claude/settings.json → pet_hook.py);
   • правая кнопка — меню (папки проектов Claude, статистика, размер, автозапуск, выход);
-  • цвет ореола — расход лимита подписки: зелёный < 50 %, жёлтый < 80 %, красный — дальше
+  • цвет ореола — расход 5‑часового лимита подписки: зелёный < 50 %, жёлтый < 80 %, красный — дальше
     (данные — status line Claude Code → pet_statusline.py и замеры приложения, см. pet_stats.py);
   • наведение на питомца — подсказка: лимиты 5 ч и недели, контекст, токены, дата продления;
   • лимит исчерпан — грустные глаза и таймер до сброса на мордочке;
@@ -129,7 +129,16 @@ LIMIT_COLORS = [             # (порог %, цвет ореола): первы
     (999, (240, 95, 80)),    # красный
 ]
 HALO_ALPHA_LIMIT = 175       # ореол заметнее, когда показывает лимит
-SESSION_FRESH = 3600         # сессия «текущая» для подсказки, если status line обновлялся за это время, сек
+SESSION_FRESH = 3600         # предупреждать о контексте сессии, если она отвечала за это время, сек
+# Приложение опрашивает лимиты, только если меню его значка в трее открывали за последние сутки
+# (pet_stats.APP_TRAY_WINDOW), — питомец сам «щёлкает» по значку правой кнопкой, пока сутки не истекли.
+TRAY_CLICK_AFTER = 20 * 3600   # меню не открывали столько — пора щёлкнуть, когда Claude не на переднем плане
+TRAY_CLICK_FORCE = 23 * 3600   # дольше — щёлкаем в любом случае (меню может мелькнуть, питомец его закроет)
+TRAY_CLICK_RETRY = 600         # повторный клик не раньше, сек: прошлый мог не засчитаться
+TRAY_INPUT_QUIET = 3           # щёлкаем, только если столько секунд не трогали клавиатуру и мышь:
+                               # нажатая буква могла бы выбрать пункт всплывшего меню
+TRAY_MENU_WAIT_MS = 1500       # сколько ждать всплывшее меню значка, чтобы закрыть его
+TRAY_MENU_POLL_MS = 50
 
 # --- Состояние «Claude не запущен» (сон) ---
 RUNNING_GRACE = 180         # без активности Claude (ответы, «думает») столько секунд — питомец засыпает
@@ -179,15 +188,33 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_NOACTIVATE = 0x08000000
 WS_EX_APPWINDOW = 0x00040000
 WS_EX_LAYERED = 0x00080000
+WS_EX_TOPMOST = 0x00000008
+HWND_TOPMOST = wt.HWND(-1)
+SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE, SWP_NOOWNERZORDER = 0x1, 0x2, 0x10, 0x200
+GA_ROOT = 2
 ULW_ALPHA, AC_SRC_ALPHA = 0x2, 0x1
 SW_MINIMIZE, SW_RESTORE = 6, 9
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_TERMINATE = 0x0001
+TH32CS_SNAPPROCESS = 0x2
 VK_MENU, KEYEVENTF_KEYUP = 0x12, 0x0002
+WM_KEYDOWN, WM_KEYUP, WM_RBUTTONDOWN, VK_ESCAPE = 0x0100, 0x0101, 0x0204, 0x1B
+TRAY_HOST_CLASS = "Electron_NotifyIconHostWindow"  # скрытое окно, через которое значок Electron в трее получает клики
+TRAY_ICON_MSG = 0x8000 + 1     # WM_APP + 1 — сообщение Windows этому окну о клике по значку
+TRAY_ICON_IDS = range(1, 65)   # номер значка снаружи не узнать; чужие номера окно пропускает
 
 user32.GetWindowLongW.restype = ctypes.c_long
 user32.SetWindowLongW.restype = ctypes.c_long
 user32.GetForegroundWindow.restype = wt.HWND
 user32.GetParent.restype = wt.HWND
+user32.FindWindowExW.restype = wt.HWND
+user32.FindWindowExW.argtypes = [wt.HWND, wt.HWND, wt.LPCWSTR, wt.LPCWSTR]
+user32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+user32.WindowFromPoint.restype = wt.HWND
+user32.WindowFromPoint.argtypes = [wt.POINT]
+user32.GetAncestor.restype = wt.HWND
+user32.GetAncestor.argtypes = [wt.HWND, wt.UINT]
+user32.SetWindowPos.argtypes = [wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.UINT]
 kernel32.OpenProcess.restype = wt.HANDLE
 EnumWindowsProc = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 
@@ -297,20 +324,80 @@ def find_claude_window():
     return found[0] if found else None
 
 
+def window_pid(hwnd) -> int:
+    pid = wt.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value
+
+
+def claude_tray_host():
+    """Скрытое окно значка приложения Claude в трее или None (такое окно есть у любого Electron-приложения)."""
+    hwnd = None
+    while True:
+        hwnd = user32.FindWindowExW(None, hwnd, TRAY_HOST_CLASS, None)
+        if not hwnd:
+            return None
+        path = process_path(hwnd).lower()
+        if path.endswith(CLAUDE_EXE_NAME) and CLAUDE_CLI_MARKER not in path:
+            return hwnd
+
+
+def untitled_windows(pid) -> set:
+    """Видимые окна процесса без заголовка — среди них всплывающее меню значка в трее."""
+    found = set()
+
+    def callback(hwnd, _):
+        if user32.IsWindowVisible(hwnd) and not user32.GetWindowTextLengthW(hwnd) and window_pid(hwnd) == pid:
+            found.add(hwnd)
+        return True
+
+    user32.EnumWindows(EnumWindowsProc(callback), 0)
+    return found
+
+
+def right_click_tray(host):
+    """
+    «Правый клик» по значку: то же сообщение, что Windows шлёт окну значка. Приложение засчитывает
+    открытие меню и показывает его, только если может стать активным (обычно — когда Claude на переднем плане).
+    """
+    for icon_id in TRAY_ICON_IDS:
+        user32.PostMessageW(host, TRAY_ICON_MSG, icon_id, WM_RBUTTONDOWN)
+
+
+def press_escape(hwnd):
+    user32.PostMessageW(hwnd, WM_KEYDOWN, VK_ESCAPE, 0x00010001)
+    user32.PostMessageW(hwnd, WM_KEYUP, VK_ESCAPE, 0xC0010001)
+
+
+class LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wt.UINT), ("dwTime", wt.DWORD)]
+
+
+def input_idle() -> float:
+    """Сколько секунд пользователь не трогал клавиатуру и мышь."""
+    info = LASTINPUTINFO(ctypes.sizeof(LASTINPUTINFO), 0)
+    if not user32.GetLastInputInfo(ctypes.byref(info)):
+        return 0.0
+    return ((kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000
+
+
 psapi = ctypes.windll.psapi
 psapi.EnumProcesses.argtypes = [ctypes.POINTER(wt.DWORD), wt.DWORD, ctypes.POINTER(wt.DWORD)]
 
 
-def claude_running(app_only=False) -> bool:
-    """
-    Запущен ли хоть один claude.exe — приложение или Claude Code CLI.
-    app_only=True — только само приложение (ссылкам claude:// нужно оно, а не CLI).
-    Окна не проверяем: свёрнутое в трей приложение окна не показывает, но работает.
-    """
+def claude_exe_paths():
+    """Пути всех запущенных claude.exe (приложение и Claude Code CLI); None — не смогли проверить."""
+    procs = claude_processes()
+    return None if procs is None else set(procs.values())
+
+
+def claude_processes():
+    """{pid: путь} всех запущенных claude.exe (приложение и Claude Code CLI); None — не смогли проверить."""
     pids = (wt.DWORD * 4096)()
     needed = wt.DWORD()
     if not psapi.EnumProcesses(pids, ctypes.sizeof(pids), ctypes.byref(needed)):
-        return True  # не смогли проверить — не усыпляем питомца зря
+        return None
+    procs = {}
     buf = ctypes.create_unicode_buffer(1024)
     for pid in pids[:needed.value // ctypes.sizeof(wt.DWORD)]:
         handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
@@ -319,12 +406,153 @@ def claude_running(app_only=False) -> bool:
         try:
             size = wt.DWORD(len(buf))
             if (kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
-                    and buf.value.lower().endswith(CLAUDE_EXE_NAME)
-                    and not (app_only and CLAUDE_CLI_MARKER in buf.value.lower())):
-                return True
+                    and buf.value.lower().endswith(CLAUDE_EXE_NAME)):
+                procs[pid] = buf.value
         finally:
             kernel32.CloseHandle(handle)
-    return False
+    return procs
+
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ProcessID", wt.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wt.DWORD),
+                ("cntThreads", wt.DWORD), ("th32ParentProcessID", wt.DWORD),
+                ("pcPriClassBase", ctypes.c_long), ("dwFlags", wt.DWORD),
+                ("szExeFile", wt.WCHAR * 260)]
+
+
+kernel32.CreateToolhelp32Snapshot.restype = wt.HANDLE
+kernel32.Process32FirstW.argtypes = [wt.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+kernel32.Process32NextW.argtypes = [wt.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+
+
+def process_parents():
+    """{pid: pid родителя} всех процессов; пустой словарь — не смогли получить список."""
+    snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if not snap or snap == wt.HANDLE(-1).value:
+        return {}
+    parents = {}
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(entry)
+        ok = kernel32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            parents[entry.th32ProcessID] = entry.th32ParentProcessID
+            ok = kernel32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(wt.HANDLE(snap))
+    return parents
+
+
+def process_start(pid):
+    """Время запуска процесса (FILETIME числом); None — не узнали."""
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        times = [wt.FILETIME() for _ in range(4)]
+        if not kernel32.GetProcessTimes(wt.HANDLE(handle), *map(ctypes.byref, times)):
+            return None
+        return times[0].dwHighDateTime << 32 | times[0].dwLowDateTime
+    finally:
+        kernel32.CloseHandle(wt.HANDLE(handle))
+
+
+def process_tree(roots, skip):
+    """
+    roots и все их потомки, кроме процесса skip и его потомков. Сироту, чей PID родителя
+    уже достался другому процессу, потомком не считаем: ребёнок не бывает старше родителя.
+    """
+    children = {}
+    for pid, parent in process_parents().items():
+        if pid != parent:
+            children.setdefault(parent, []).append(pid)
+    tree, stack = set(), [pid for pid in roots if pid != skip]
+    while stack:
+        pid = stack.pop()
+        if pid in tree:
+            continue
+        tree.add(pid)
+        start = process_start(pid)
+        for child in children.get(pid, ()):
+            if child == skip or child in tree:
+                continue
+            child_start = process_start(child)
+            if start is None or child_start is None or child_start >= start:
+                stack.append(child)
+    return tree
+
+
+def stop_claude_app():
+    """
+    Выключить приложение Claude целиком, вместе с сессиями вкладки Code. Закрытие окна
+    его не выключает — оно уходит в трей, поэтому процессы завершаются. Claude Code
+    в терминале (тот же claude.exe из папки claude-code) не трогаем. Самого питомца тоже:
+    запущенный из сессии Claude Code, он сидит в дереве процессов Claude (а taskkill /T
+    выключал его вместе с ним).
+    """
+    roots = [pid for pid, path in (claude_processes() or {}).items() if CLAUDE_CLI_MARKER not in path.lower()]
+    for pid in roots + sorted(process_tree(roots, skip=os.getpid()) - set(roots)):
+        handle = kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+        if handle:
+            kernel32.TerminateProcess(wt.HANDLE(handle), 1)
+            kernel32.CloseHandle(wt.HANDLE(handle))
+
+
+def claude_running(app_only=False, paths=None) -> bool:
+    """
+    Запущен ли хоть один claude.exe — приложение или Claude Code CLI.
+    app_only=True — только само приложение (ссылкам claude:// нужно оно, а не CLI).
+    paths — уже найденные claude_exe_paths(), чтобы не перебирать процессы второй раз.
+    Окна не проверяем: свёрнутое в трей приложение окна не показывает, но работает.
+    """
+    if paths is None:
+        paths = claude_exe_paths()
+    if paths is None:
+        return True  # не смогли проверить — не усыпляем питомца зря
+    return any(not (app_only and CLAUDE_CLI_MARKER in p.lower()) for p in paths)
+
+
+def claude_app_dir(paths):
+    """
+    Папка запущенного приложения Claude (без CLI). После обновления приложение
+    переезжает в новую папку (Store: Claude_<версия>_x64__…, обычная установка: app-<версия>).
+    None — приложение не запущено или запущено сразу из нескольких папок (идёт обновление).
+    """
+    dirs = {str(Path(p).parent) for p in paths or () if CLAUDE_CLI_MARKER not in p.lower()}
+    return dirs.pop() if len(dirs) == 1 else None
+
+
+version_dll = ctypes.windll.version
+
+
+def claude_app_version(app_dir):
+    """
+    Версия приложения: из свойств claude.exe, а если их нет — из пути папки
+    («…\\Claude_1.2.3.0_x64__…\\app» или «…\\app-1.2.3»). None — не узнали.
+    """
+    exe = str(Path(app_dir) / CLAUDE_EXE_NAME)
+    try:
+        size = version_dll.GetFileVersionInfoSizeW(exe, None)
+        if size:
+            data = ctypes.create_string_buffer(size)
+            info = ctypes.c_void_p()
+            length = wt.UINT()
+            if (version_dll.GetFileVersionInfoW(exe, 0, size, data)
+                    and version_dll.VerQueryValueW(data, "\\", ctypes.byref(info), ctypes.byref(length))
+                    and length.value >= 16):
+                ms, ls = ctypes.cast(info, ctypes.POINTER(wt.DWORD))[2:4]  # VS_FIXEDFILEINFO.dwFileVersionMS/LS
+                parts = [ms >> 16, ms & 0xFFFF, ls >> 16, ls & 0xFFFF]
+                while len(parts) > 3 and parts[-1] == 0:
+                    parts.pop()
+                return ".".join(map(str, parts))
+    except OSError:
+        pass
+    for part in reversed(Path(app_dir).parts):
+        m = re.search(r"\d+(?:\.\d+)+", part)
+        if m:
+            return m.group(0)
+    return None
 
 
 def claude_launch_command(cancel=None):
@@ -922,29 +1150,43 @@ class InfoTip:
 
 
 class Bubble:
-    """Пузырь-уведомление рядом с питомцем; исчезает сам через NOTIFY_SECONDS или по клику."""
+    """
+    Пузырь-уведомление рядом с питомцем; исчезает сам через NOTIFY_SECONDS или по клику.
+    sticky=True — висит до клика, а следующие сообщения дописываются в него (append).
+    """
 
-    def __init__(self, pet, text):
+    def __init__(self, pet, text, sticky=False):
         self.pet = pet
+        self.sticky = sticky
+        self.text = text
         s = pet.scale
         self.top = top = tk.Toplevel(pet.root)
         top.withdraw()
         top.overrideredirect(True)
         top.attributes("-topmost", True)
         top.configure(bg=BUBBLE_EDGE)
-        label = tk.Label(top, text=text, justify="left", wraplength=int(300 * s), bg=BUBBLE_BG, fg=MENU_FG,
-                         font=TIP_FONT, padx=int(12 * s), pady=int(9 * s), cursor="hand2")
+        self.label = label = tk.Label(top, text=text, justify="left", wraplength=int(300 * s), bg=BUBBLE_BG,
+                                      fg=MENU_FG, font=TIP_FONT, padx=int(12 * s), pady=int(9 * s), cursor="hand2")
         label.pack(padx=max(1, int(s)), pady=max(1, int(s)))
         for wdg in (top, label):
             wdg.bind("<ButtonRelease-1>", lambda e: self.close())
-        top.update_idletasks()
-        w, h = top.winfo_reqwidth(), top.winfo_reqheight()
-        x, y = place_beside(pet, w, h)
-        top.geometry(f"{w}x{h}+{x}+{y - int(h * 0.8)}")
+        self.place()
         top.deiconify()
         top.update_idletasks()
         style_popup(top)
-        top.after(NOTIFY_SECONDS * 1000, self.close)
+        self.timer = None if sticky else top.after(NOTIFY_SECONDS * 1000, self.close)
+
+    def place(self):
+        self.top.update_idletasks()
+        w, h = self.top.winfo_reqwidth(), self.top.winfo_reqheight()
+        x, y = place_beside(self.pet, w, h)
+        self.top.geometry(f"{w}x{h}+{x}+{y - int(h * 0.8)}")
+
+    def append(self, text):
+        """Дописать сообщение в висящий пузырь (он остаётся до клика)."""
+        self.text += "\n\n" + text
+        self.label.configure(text=self.text)
+        self.place()
 
     def close(self):
         if self.top.winfo_exists():
@@ -1034,6 +1276,77 @@ class RenewalDialog:
 
     def clear(self):
         self.pet.settings.pop("renewal", None)
+        self.pet.save_settings()
+        self.top.destroy()
+
+
+class WeekResetDialog:
+    """
+    День и время недельного сброса лимита, заданные вручную. Нужны, только пока питомец
+    не вычислил их сам: вычисленное время важнее ручного (pet_stats.week_reset_effective).
+    """
+
+    def __init__(self, pet):
+        self.pet = pet
+        s = pet.scale
+        self.top = top = tk.Toplevel(pet.root)
+        top.title(tr("Недельный сброс лимита"))
+        top.configure(bg=MENU_BG)
+        top.attributes("-topmost", True)
+        top.resizable(False, False)
+        pad = {"padx": int(12 * s), "pady": int(4 * s)}
+        tk.Label(top, text=tr("Недельный лимит сбрасывается в один и тот же день и час —\n"
+                              "они видны в подсказке индикатора лимитов в окне Claude.\n"
+                              "Питомец вычисляет их сам, когда заметит сброс в замерах\n"
+                              "приложения. Заданное здесь используется, только пока\n"
+                              "он не вычислил время сам."),
+                 justify="left", bg=MENU_BG, fg=MENU_FG, font=TIP_FONT).pack(anchor="w", **pad)
+        tk.Label(top, text=pet.week_reset_text(), justify="left", bg=MENU_BG, fg=MENU_FG,
+                 font=TIP_FONT).pack(anchor="w", **pad)
+        info = ps.week_reset_effective(pet.settings.get("week_reset"), pet.settings.get("week_reset_manual"))
+        at = datetime.fromtimestamp(float(info["hi"])) if info else None
+        self.days = [ps.weekday_name(i) for i in range(7)]
+        row = tk.Frame(top, bg=MENU_BG)
+        row.pack(anchor="w", **pad)
+        self.day = tk.StringVar(value=self.days[at.weekday() if at else 0])
+        menu = tk.OptionMenu(row, self.day, *self.days)
+        menu.configure(bg=MENU_HOVER, fg=MENU_FG, activebackground=MENU_SEP, activeforeground=MENU_FG,
+                       relief="flat", highlightthickness=0, font=TIP_FONT)
+        menu["menu"].configure(bg=MENU_BG, fg=MENU_FG, activebackground=MENU_HOVER,
+                               activeforeground=MENU_FG, font=TIP_FONT)
+        menu.pack(side="left")
+        self.time = tk.StringVar(value=f"{at:%H:%M}" if at else "")
+        entry = tk.Entry(row, textvariable=self.time, font=TIP_FONT, bg="#1e1e1e", fg=MENU_FG,
+                         insertbackground=MENU_FG, relief="flat", width=7)
+        entry.pack(side="left", padx=(int(8 * s), 0))
+        self.error = tk.Label(top, text="", bg=MENU_BG, fg="#f06050", font=TIP_FONT)
+        self.error.pack(anchor="w", padx=int(12 * s))
+        bar = tk.Frame(top, bg=MENU_BG)
+        bar.pack(fill="x", padx=int(12 * s), pady=int(10 * s))
+        for text, cmd in ((tr("Сохранить"), self.save), (tr("Очистить"), self.clear), (tr("Отмена"), top.destroy)):
+            tk.Button(bar, text=text, command=cmd, bg=MENU_HOVER, fg=MENU_FG, activebackground=MENU_SEP,
+                      activeforeground=MENU_FG, relief="flat", padx=int(10 * s)).pack(side="left", padx=(0, int(6 * s)))
+        entry.bind("<Return>", lambda e: self.save())
+        top.bind("<Escape>", lambda e: top.destroy())
+        top.update_idletasks()
+        w, h = top.winfo_reqwidth(), top.winfo_reqheight()
+        x, y = place_beside(pet, w, h)
+        top.geometry(f"+{x}+{y}")
+        entry.focus_force()
+
+    def save(self):
+        m = re.fullmatch(r"(\d{1,2})[:.](\d{2})", self.time.get().strip())
+        if not m or int(m[1]) > 23 or int(m[2]) > 59:
+            self.error.configure(text=tr("Нужно время ЧЧ:ММ, например 03:00"))
+            return
+        self.pet.settings["week_reset_manual"] = ps.manual_week_reset(self.days.index(self.day.get()),
+                                                                      int(m[1]), int(m[2]))
+        self.pet.save_settings()
+        self.top.destroy()
+
+    def clear(self):
+        # убирает только ручное время; вычисленное питомцем остаётся
+        self.pet.settings.pop("week_reset_manual", None)
         self.pet.save_settings()
         self.top.destroy()
 
@@ -1166,7 +1479,7 @@ class Pet:
         self.zs = {}
 
         # --- лимиты, статистика, состояния ---
-        self.usage = {"limits": {}, "sessions": []}  # из status line (pet_stats.read_usage)
+        self.usage = {"limits": {}, "sessions": [], "expired": {}}  # из status line (pet_stats.read_usage)
         self.journal = ps.JournalStats()
         self.chat_log = ps.ChatLog()  # начала ответов обычного чата — для оценки сброса лимита
         self.chat_was = False         # думал ли чат при прошлой проверке (ловим начало ответа)
@@ -1177,11 +1490,15 @@ class Pet:
         self.last_busy = 0.0       # когда последний раз видели «Claude думает»
         self.last_touch = 0.0      # когда последний раз мышь была на питомце (сбрасывает таймер сна)
         self.app_seen = False      # был ли claude.exe при прошлой проверке (ловим момент запуска)
+        self.app_dir_seen = None   # папка приложения при прошлой проверке (ловим обновление Claude)
         self.last_launch = time.time()  # запуск Claude будит питомца; старт самого питомца — тоже (после перезагрузки он не грузится спящим)
         self.idle_for = 0.0        # сколько секунд нет активности Claude
         self.rest_idle = None      # idle_for в момент, когда наведение разбудило питомца (для подсказки)
         self.block = None          # (окно, время сброса), если лимит исчерпан
         self.was_blocked = False
+        # последний «клик» по значку Claude в трее: когда, какое время открытия меню было до него,
+        # сколько кликов подряд не засчиталось (тогда — уведомление с просьбой щёлкнуть вручную)
+        self.tray_click = {"at": 0.0, "tray": None, "fails": 0}
         self.hover_since = None
         self.tip = None
         self.bubble = None
@@ -1234,6 +1551,21 @@ class Pet:
         style = user32.GetWindowLongW(self.hwnd, GWL_EXSTYLE)
         style = (style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED) & ~WS_EX_APPWINDOW
         user32.SetWindowLongW(self.hwnd, GWL_EXSTYLE, style)
+
+    def keep_on_top(self):
+        """
+        Питомец всегда поверх окон. Windows иногда снимает с окна «поверх всех» (перезапуск
+        Проводника, полноэкранные приложения), а другое окно «поверх всех» может встать выше, —
+        тогда поднимаем питомца снова, не забирая фокус. Свои окна (пузырь, подсказка, меню) не в счёт.
+        """
+        topmost = user32.GetWindowLongW(self.hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST
+        center = wt.POINT(self.root.winfo_rootx() + self.win // 2, self.root.winfo_rooty() + self.win // 2)
+        above = user32.GetAncestor(user32.WindowFromPoint(center), GA_ROOT)
+        covered = above and above != self.hwnd and window_pid(above) != os.getpid()
+        if topmost and not covered:
+            return
+        user32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                            SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOOWNERZORDER)
 
     def apply_size(self):
         self.size = int(self.settings.get("size", SIZES["Средний"]) * self.scale)
@@ -1313,6 +1645,11 @@ class Pet:
             self.running = True
         elif not hover:
             self.rest_idle = None
+        if self.bubble:
+            # пузырь на экране — тоже активность: питомец просыпается и не спит, пока пузырь висит
+            # (засыпает снова через RUNNING_GRACE после того, как пузырь закрылся)
+            self.last_touch = now
+            self.running = True
         sleeping = not self.running and not self.busy
         if sleeping:
             mood = "sleep"
@@ -1371,13 +1708,13 @@ class Pet:
 
     # --- лимиты, состояние Claude, уведомления ---
     def limit_level(self):
-        """Максимальный % из окон 5 ч и недели (по нему цвет ореола); None — данных нет."""
+        """% окна 5 ч (по нему цвет ореола); None — данных нет."""
         if not self.settings.get("limits", True):
             return None
-        pcts = [lim["pct"] for lim in self.usage["limits"].values()]
         if self.block:
             return 100.0
-        return max(pcts) if pcts else None
+        five = self.usage["limits"].get("five_hour")
+        return five["pct"] if five else None
 
     def first_answer(self, lo, hi):
         """Первый ответ Claude в промежутке (lo, hi]: из журнала Claude Code или из записей чата."""
@@ -1388,14 +1725,24 @@ class Pet:
         """Раз в STATUS_INTERVAL_MS: лимиты, «запущен ли Claude», упор в лимит, уведомления."""
         now = time.time()
         try:
-            self.usage = ps.read_usage(now, self.first_answer)
+            # Время недельного сброса: вычисленное (status line, падения процента недели)
+            # хранится отдельно от ручного и важнее его — ручное только на время, пока вычислить не из чего.
+            week, manual = self.settings.get("week_reset"), self.settings.get("week_reset_manual")
+            self.usage = ps.read_usage(now, self.first_answer, ps.week_reset_effective(week, manual))
+            learned = ps.learn_week_reset(week, self.usage["week_exact"])
+            if learned != week:
+                self.settings["week_reset"] = learned
+                self.save_settings()
+                self.usage = ps.read_usage(now, self.first_answer, ps.week_reset_effective(learned, manual))
             # Питомец не спит, пока Claude активен: за последние RUNNING_GRACE секунд был
             # ответ в журнале Claude Code, обновление status line или «думает» (Code или чат).
             # Сам запуск Claude — тоже активность: питомец просыпается сразу и засыпает,
             # только если после запуска RUNNING_GRACE секунд ничего не происходило.
             # Открытое, но простаивающее приложение — тоже сон; процесс нужен ещё
             # для подсказки: «отдыхает» (приложение открыто) или «не запущен».
-            self.app_running = claude_running()
+            paths = claude_exe_paths()
+            self.app_running = claude_running(paths=paths)
+            self.check_app_dir(claude_app_dir(paths))
             if self.app_running and not self.app_seen:
                 self.last_launch = now
             self.app_seen = self.app_running
@@ -1413,6 +1760,7 @@ class Pet:
                     if not block or lim["resets_at"] > block[1]:
                         block = (name, float(lim["resets_at"]))
             self.block = block
+            self.tray_keepalive(now)
             if self.settings.get("notify", True):
                 self.check_notifications(now)
             self.was_blocked = bool(block)
@@ -1420,8 +1768,43 @@ class Pet:
         except Exception as e:
             # сбой статистики не должен ронять питомца, но и пропадать молча не должен
             self.status_error = f"{type(e).__name__}: {e}"
+        self.keep_on_top()
         self.write_state(now)
         self.root.after(STATUS_INTERVAL_MS, self.update_status)
+
+    def tray_keepalive(self, now):
+        """
+        Приложение опрашивает лимиты, только если меню его значка в трее открывали за сутки, —
+        «щёлкаем» по значку сами (right_click_tray), пока сутки не истекли. Сначала только когда
+        Claude не на переднем плане: тогда меню обычно не всплывает вовсе. Ближе к концу суток —
+        в любом случае, а всплывшее меню сразу закрываем.
+        """
+        tray = self.usage.get("tray_open")
+        if (not self.settings.get("tray_click", True) or not self.settings.get("limits", True)
+                or not self.app_running or tray is None or now - tray < TRAY_CLICK_AFTER):
+            return
+        if now - self.tray_click["at"] < TRAY_CLICK_RETRY or input_idle() < TRAY_INPUT_QUIET:
+            return
+        host = claude_tray_host()
+        if not host:
+            return
+        pid = window_pid(host)
+        if now - tray < TRAY_CLICK_FORCE and window_pid(user32.GetForegroundWindow()) == pid:
+            return
+        click = self.tray_click
+        click["fails"] = click["fails"] + 1 if click["at"] and click["tray"] == tray else 0
+        click.update(at=now, tray=tray)
+        before = untitled_windows(pid)
+        right_click_tray(host)
+        self.close_tray_menu(pid, before, TRAY_MENU_WAIT_MS // TRAY_MENU_POLL_MS)
+
+    def close_tray_menu(self, pid, before, tries):
+        """Закрыть меню значка, если оно всплыло после right_click_tray: новое окно Claude без заголовка."""
+        menu = untitled_windows(pid) - before
+        for hwnd in menu:
+            press_escape(hwnd)
+        if not menu and tries > 0:
+            self.root.after(TRAY_MENU_POLL_MS, self.close_tray_menu, pid, before, tries - 1)
 
     def write_state(self, now):
         """
@@ -1436,6 +1819,10 @@ class Pet:
             "limit_level": level, "halo": limit_color(level) if self.app_running or self.busy else None,
             "limits": {k: {"pct": v["pct"], "source": v.get("source"), "age_min": round((now - v["updated"]) / 60)}
                        for k, v in self.usage["limits"].items()},
+            "app_poll_paused": bool(self.usage.get("app_paused")),
+            "tray_open_age_h": round((now - self.usage["tray_open"]) / 3600, 1) if self.usage.get("tray_open") else None,
+            "tray_click": {"ago_min": round((now - self.tray_click["at"]) / 60) if self.tray_click["at"] else None,
+                           "fails": self.tray_click["fails"]},
             "block": self.block, "error": getattr(self, "status_error", None),
         }
         try:
@@ -1464,11 +1851,48 @@ class Pet:
         self.save_settings()
         self.show_bubble(text)
 
-    def show_bubble(self, text):
-        """Показать пузырь сразу, заменив прежний."""
+    def show_bubble(self, text, sticky=False):
+        """
+        Показать пузырь сразу, заменив прежний. Если висит пузырь «до клика» (sticky) —
+        сообщение дописывается в него. sticky=True — новый пузырь тоже висит до клика.
+        """
+        if self.bubble and self.bubble.sticky and self.bubble.top.winfo_exists():
+            self.bubble.append(text)
+            return
         if self.bubble:
             self.bubble.close()
-        self.bubble = Bubble(self, text)
+        self.bubble = Bubble(self, text, sticky)
+
+    def check_app_dir(self, app_dir):
+        """
+        Claude обновился — приложение запущено из другой папки или с другой версией, чем
+        в прошлый раз. Обе хранятся в настройках: обновление замечается и между запусками
+        питомца. Версия перечитывается, только когда приложение (пере)запустилось.
+        """
+        if not app_dir:
+            self.app_dir_seen = None  # приложение закрыто — после запуска версию перечитаем
+            return
+        if app_dir == self.app_dir_seen:
+            return
+        self.app_dir_seen = app_dir
+        version = claude_app_version(app_dir)
+        old_dir, old_ver = self.settings.get("app_dir"), self.settings.get("app_version")
+        if (old_dir, old_ver) == (app_dir, version):
+            return
+        self.settings["app_dir"], self.settings["app_version"] = app_dir, version
+        self.save_settings()
+        if not old_dir or not self.settings.get("notify", True):
+            return  # первый запуск питомца — сравнивать не с чем
+        moved = old_dir != app_dir
+        if old_ver and version and old_ver != version:
+            text = tr("⬆ Claude обновился: {old} → {new}.", old=old_ver, new=version)
+        elif moved:
+            text = tr("⬆ Claude обновился и переехал в новую папку.")
+        else:
+            return  # версию не узнали, папка та же — сообщать не о чем
+        if moved:
+            text += "\n" + tr("Новая папка: {path}", path=app_dir)
+        self.show_bubble(text, sticky=True)
 
     def check_notifications(self, now):
         for name, lim in self.usage["limits"].items():
@@ -1493,6 +1917,14 @@ class Pet:
                 tail = (tr("\nСброс {at} (через {left}).", at=ps.fmt_reset(reset, now), left=ps.fmt_left(reset - now))
                         if reset else "")
                 self.notify(f"{name}:{win_id}:{crossed[-1]}", f"⚠ {title}: {lim['pct']:.0f} %.{tail}")
+        paused = self.usage.get("app_paused")
+        auto = self.settings.get("tray_click", True)
+        if paused and self.app_running and self.settings.get("limits", True) and (not auto or self.tray_click["fails"]):
+            # Одно уведомление на каждое «последнее открытие меню в трее»; если питомец щёлкает
+            # по значку сам — только когда его клик не засчитался.
+            self.notify(f"tray:{int(paused)}",
+                        tr("📊 Claude перестал обновлять лимиты.\n"
+                           "Щёлкни правой кнопкой по его значку в трее — опрос возобновится на сутки."))
         if self.was_blocked and not self.block:
             self.notify(f"unblock:{int(now // 60)}", tr("✅ Лимит снова доступен."))
         elif self.block and not self.was_blocked:
@@ -1544,9 +1976,9 @@ class Pet:
                 break
         return info
 
-    def current_session(self, now):
-        """Самая свежая сессия с ответом за последние SESSION_FRESH секунд или None."""
-        recent = self.journal.recent_sessions(now - SESSION_FRESH)
+    def current_session(self):
+        """Самая свежая сессия в журнале, сколько бы ей ни было (давность — в session_line), или None."""
+        recent = self.journal.recent_sessions(0)
         return self.session_info(*recent[0]) if recent else None
 
     def context_limit(self, model):
@@ -1592,12 +2024,17 @@ class Pet:
         lines = []
         mark = (lambda icon: icon + " ") if icons else (lambda icon: "")
         if not self.settings.get("limits", True):
-            return [mark("📊") + tr("Лимиты: показ выключен в настройках")]
+            return []
         if foreign_statusline() and not self.usage["limits"]:
             return [mark("📊") + tr("Лимиты: недоступны — в Claude Code стоит другой status line")]
+        expired = self.usage.get("expired", {})
         for name, title in ps.WINDOWS.items():
             lim = self.usage["limits"].get(name)
             if not lim:
+                if name in expired:
+                    # замер приложения старше окна: процент уже неверен, а новых замеров нет
+                    lines.append(mark("❔") + tr("{title}: нет свежих данных (замер {at})",
+                                                 title=tr(title), at=ps.fmt_reset(expired[name], now)))
                 continue
             title = tr(title)
             if lim["stale"]:
@@ -1605,15 +2042,29 @@ class Pet:
             else:
                 reset = lim["resets_at"]
                 approx = "~" if lim.get("estimated") else ""  # оценка по замерам приложения
-                tail = (tr(" · сброс через {approx}{left} ({at})", approx=approx,
-                           left=ps.fmt_left(reset - now), at=ps.fmt_reset(reset, now)) if reset else "")
+                if not reset:
+                    tail = ""
+                elif lim.get("bound"):  # известна только верхняя граница сброса
+                    tail = tr(" · сброс не позже чем через {left} ({at})",
+                              left=ps.fmt_left(reset - now), at=ps.fmt_reset(reset, now))
+                else:
+                    tail = tr(" · сброс через {approx}{left} ({at})", approx=approx,
+                              left=ps.fmt_left(reset - now), at=ps.fmt_reset(reset, now))
                 lines.append(mark(LIMIT_ICONS[name]) + f"{title}: {lim['pct']:.0f} %{tail}")
-        if not lines:
+        # приложение перестало опрашивать лимиты: без правого клика по значку в трее новых данных не будет
+        paused = self.usage.get("app_paused") and self.app_running
+        if not lines and not paused:
             lines.append(mark("📊") + tr("Лимиты: данных пока нет — придут с ответом Claude Code"))
-        elif with_source:
+        elif with_source and self.usage["limits"]:
             fresh = max(self.usage["limits"].values(), key=lambda lim: lim["updated"])
             lines.append(tr("   данные на {at:%d.%m %H:%M} ({source})", at=datetime.fromtimestamp(fresh['updated']),
                             source=tr(fresh.get('source', 'status line'))))
+        elif self.usage["limits"]:
+            # в подсказке — давность данных: «только что», «7 мин назад», «3 ч назад»
+            updated = max(lim["updated"] for lim in self.usage["limits"].values())
+            lines.append(mark("🕒") + tr("Статистика по лимитам обновлена {ago}", ago=ps.fmt_since(updated, now)))
+        if paused:
+            lines.append(mark("🖱") + tr("Claude не обновляет лимиты — щёлкни правой кнопкой по его значку в трее"))
         return lines
 
     def tip_text(self):
@@ -1635,7 +2086,7 @@ class Pet:
             lines.append(tr("⛔ Лимит исчерпан · сброс {at} (через {left})", at=ps.fmt_reset(reset, now),
                             left=ps.fmt_left(reset - now)))
         lines += self.limit_lines(now, icons=True)
-        info = self.current_session(now)
+        info = self.current_session()
         if info:
             # первая строка — папка и название сессии в приложении, вторая — расход
             name = self.journal.project_of(info['cwd'])
@@ -1671,6 +2122,19 @@ class Pet:
             self.next_tip = now + 0.5
             self.tip.show(self.tip_text())
 
+    def week_reset_text(self):
+        """Когда сбрасывается недельный лимит и откуда это известно — для статистики и окна настройки."""
+        info = ps.week_reset_effective(self.settings.get("week_reset"), self.settings.get("week_reset_manual"))
+        if not info:
+            return tr("Недельный сброс: пока неизвестен — вычислится сам после ближайшего сброса")
+        at = ps.fmt_week_reset(info)
+        if info.get("src") == "manual":
+            return tr("Недельный сброс: {at} (задан вручную, пока питомец не вычислил сам)", at=at)
+        if info.get("src") == "status line":
+            return tr("Недельный сброс: {at} (status line Claude Code)", at=at)
+        return tr("Недельный сброс: ~{at} (по замерам приложения, точность {acc})",
+                  at=at, acc=ps.fmt_left(float(info["hi"]) - float(info["lo"])))
+
     def stats_report(self):
         """Текст окна «Статистика»."""
         now = time.time()
@@ -1683,6 +2147,7 @@ class Pet:
         out.append(tr("  Продление подписки: {date:%d.%m.%Y} (через {n} дн.)", date=renewal,
                       n=(renewal - date.today()).days)
                    if renewal else tr("  Продление подписки: дата не задана (меню → Настройки)"))
+        out.append("  " + self.week_reset_text())
         q = self.journal.quota
         if q:
             out.append(tr("  Последний упор в лимит: {at:%d.%m %H:%M} ({kind})", at=datetime.fromtimestamp(q[0]),
@@ -1742,6 +2207,10 @@ class Pet:
 
     def toggle_notify(self):
         self.settings["notify"] = not self.settings.get("notify", True)
+        self.save_settings()
+
+    def toggle_tray_click(self):
+        self.settings["tray_click"] = not self.settings.get("tray_click", True)
         self.save_settings()
 
     # мышь
@@ -1830,7 +2299,8 @@ class Pet:
     def finish_launch(self):
         """Забыть текущий поиск и убрать пузырь «Ищу Claude…», если он ещё висит."""
         launch, self.launch = self.launch, None
-        if launch and launch["hint"] is not None and self.bubble is launch["hint"]:
+        # подсказка, дописанная в пузырь «до клика», остаётся в нём — закрывать его целиком нельзя
+        if launch and launch["hint"] is not None and self.bubble is launch["hint"] and not self.bubble.sticky:
             self.bubble.close()
 
     def cancel_launch(self, text):
@@ -1866,8 +2336,21 @@ class Pet:
             {"label": tr("Настройки"), "submenu": self.settings_items},
             {"label": tr("Язык"), "submenu": self.lang_items},
             None,
-            {"label": tr("Закрыть питомца"), "command": self.root.destroy},
+            {"label": tr("Выключить Claude"), "command": self.stop_claude, "disabled": not running},
+            {"label": tr("Выключить питомца"), "command": self.root.destroy},
         ]
+
+    def stop_claude(self):
+        """
+        Выключить приложение Claude. Пока Claude отвечает, сначала спрашиваем: незаконченные
+        ответы прервутся. Без дела — выключаем сразу. Метки берём без учёта настроек «Следить за…»:
+        выключенный ореол не значит, что Claude ничего не делает.
+        """
+        if any(claude_is_thinking()) and user32.MessageBoxW(
+                None, tr("Выключить Claude? Незаконченные ответы и задачи прервутся."),
+                tr("Питомец Claude"), 0x40034) != 6:  # MB_YESNO | MB_ICONWARNING | MB_TOPMOST → IDYES
+            return
+        stop_claude_app()
 
     def link_item(self, label, url, what):
         """Пункт меню, открывающий ссылку claude:// (what — для текста ошибки)."""
@@ -1939,9 +2422,12 @@ class Pet:
              "command": self.toggle_thinking},
             {"label": tr("Показывать лимиты подписки"), "checked": self.settings.get("limits", True),
              "command": self.toggle_limits},
+            {"label": tr("Щёлкать по значку Claude в трее (лимиты обновляются)"),
+             "checked": self.settings.get("tray_click", True), "command": self.toggle_tray_click},
             {"label": tr("Уведомления"), "checked": self.settings.get("notify", True),
              "command": self.toggle_notify},
             {"label": tr("Дата продления подписки…"), "command": lambda: RenewalDialog(self)},
+            {"label": tr("Недельный сброс лимита…"), "command": lambda: WeekResetDialog(self)},
             {"label": tr("Контекст и предупреждения…"), "command": self.open_context_dialog},
             None,
             {"label": tr("Запускать вместе с Windows"), "checked": autostart_enabled(),

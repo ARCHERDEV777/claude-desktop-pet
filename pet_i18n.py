@@ -68,6 +68,10 @@ EN = {
     "Не удалось найти установленное приложение Claude.": "Could not find the installed Claude app.",
     "Не удалось открыть {what}.": "Could not open {what}.",
     "Не удалось запустить Claude.": "Could not launch Claude.",
+    "⬆ Claude обновился: {old} → {new}.": "⬆ Claude updated: {old} → {new}.",
+    "⬆ Claude обновился и переехал в новую папку.": "⬆ Claude updated and moved to a new folder.",
+    "Новая папка: {path}": "New folder: {path}",
+    "{title}: нет свежих данных (замер {at})": "{title}: no fresh data (measured {at})",
     "Запуск Claude отменён.": "Claude launch cancelled.",
     "Claude не нашёлся за {sec} с — похоже, приложение не установлено.":
         "Claude was not found within {sec} s — the app seems not to be installed.",
@@ -76,6 +80,9 @@ EN = {
 
     # --- главное меню ---
     "Запустить Claude": "Launch Claude",
+    "Выключить Claude": "Quit Claude",
+    "Выключить Claude? Незаконченные ответы и задачи прервутся.":
+        "Quit Claude? Unfinished replies and tasks will be interrupted.",
     "Открыть Claude": "Open Claude",
     "Открыть Code": "Open Code",
     "Открыть папку": "Open folder",
@@ -83,7 +90,7 @@ EN = {
     "Размер": "Size",
     "Настройки": "Settings",
     "Язык": "Language",
-    "Закрыть питомца": "Close pet",
+    "Выключить питомца": "Quit pet",
 
     # --- «Открыть Claude» (пункты и что открываем — для текста ошибки) ---
     "Новый чат": "New chat",
@@ -125,8 +132,10 @@ EN = {
     "Следить за чатом Claude": "Watch Claude chat",
     "Следить за Claude Code": "Watch Claude Code",
     "Показывать лимиты подписки": "Show subscription limits",
+    "Щёлкать по значку Claude в трее (лимиты обновляются)": "Click Claude's tray icon (keeps limits updating)",
     "Уведомления": "Notifications",
     "Дата продления подписки…": "Subscription renewal date…",
+    "Недельный сброс лимита…": "Weekly limit reset…",
     "Запускать вместе с Windows": "Start with Windows",
 
     # --- подсказка ---
@@ -148,7 +157,6 @@ EN = {
     # --- лимиты (подсказка и окно статистики) ---
     "5 часов": "5 hours",
     "Неделя": "Week",
-    "Лимиты: показ выключен в настройках": "Limits: hidden in settings",
     "Лимиты: недоступны — в Claude Code стоит другой status line":
         "Limits: unavailable — Claude Code uses another status line",
     "Лимиты: данных пока нет — придут с ответом Claude Code":
@@ -156,6 +164,10 @@ EN = {
     "{title}: сброшен, новые данные — после ответа Claude Code":
         "{title}: reset, new data after a Claude Code reply",
     " · сброс через {approx}{left} ({at})": " · resets in {approx}{left} ({at})",
+    " · сброс не позже чем через {left} ({at})": " · resets within {left} ({at})",
+    "Статистика по лимитам обновлена {ago}": "Limit stats updated {ago}",
+    "Claude не обновляет лимиты — щёлкни правой кнопкой по его значку в трее":
+        "Claude has stopped updating limits — right-click its tray icon",
     "   данные на {at:%d.%m %H:%M} ({source})": "   data as of {at:%d.%m %H:%M} ({source})",
     "приложение": "app",
 
@@ -165,6 +177,8 @@ EN = {
     "🔄 {title} обновился — можно работать в полную силу.": "🔄 {title} has reset — full speed ahead.",
     "\nСброс {at} (через {left}).": "\nResets {at} (in {left}).",
     "✅ Лимит снова доступен.": "✅ The limit is available again.",
+    "📊 Claude перестал обновлять лимиты.\nЩёлкни правой кнопкой по его значку в трее — опрос возобновится на сутки.":
+        "📊 Claude has stopped updating limits.\nRight-click its tray icon — polling resumes for a day.",
     "⛔ Лимит исчерпан.\nСброс {at} (через {left}).": "⛔ Limit reached.\nResets {at} (in {left}).",
     "🧠 Контекст сессии ({project}): {tokens} токенов.\nПора сделать /compact или начать новую сессию.":
         "🧠 Session context ({project}): {tokens} tokens.\nTime to run /compact or start a new session.",
@@ -211,6 +225,27 @@ EN = {
     "Очистить": "Clear",
     "Отмена": "Cancel",
     "Нужен формат ДД.ММ.ГГГГ, например 31.10.2026": "Use the DD.MM.YYYY format, e.g. 31.10.2026",
+
+    # --- окно недельного сброса ---
+    "Недельный сброс лимита": "Weekly limit reset",
+    "Недельный лимит сбрасывается в один и тот же день и час —\n"
+    "они видны в подсказке индикатора лимитов в окне Claude.\n"
+    "Питомец вычисляет их сам, когда заметит сброс в замерах\n"
+    "приложения. Заданное здесь используется, только пока\n"
+    "он не вычислил время сам.":
+        "The weekly limit resets on the same day and hour every week —\n"
+        "see the tooltip of the limits indicator in the Claude window.\n"
+        "The pet works them out by itself once it notices a reset\n"
+        "in the app's measurements. The time set here is used only\n"
+        "until the pet has worked it out.",
+    "Нужно время ЧЧ:ММ, например 03:00": "Use the HH:MM format, e.g. 03:00",
+    "Недельный сброс: пока неизвестен — вычислится сам после ближайшего сброса":
+        "Weekly reset: unknown yet — will be worked out after the next reset",
+    "Недельный сброс: {at} (задан вручную, пока питомец не вычислил сам)":
+        "Weekly reset: {at} (set manually until the pet works it out)",
+    "Недельный сброс: {at} (status line Claude Code)": "Weekly reset: {at} (Claude Code status line)",
+    "Недельный сброс: ~{at} (по замерам приложения, точность {acc})":
+        "Weekly reset: ~{at} (from app measurements, accurate to {acc})",
 
     # --- окно «Контекст и предупреждения» ---
     "Контекст и предупреждения…": "Context and warnings…",

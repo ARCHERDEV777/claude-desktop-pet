@@ -11,6 +11,9 @@ venv/
 # Demo video (too heavy for the repository)
 demo.mp4
 
+# Claude Code: local skills (publish-pet)
+.claude/
+
 # Windows
 Thumbs.db
 desktop.ini
